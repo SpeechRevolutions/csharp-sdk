@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>SpeechRevolutions</RootNamespace>
+    <AssemblyName>SpeechRevolutions</AssemblyName>
+    <Version>0.2.0</Version>
+    <Description>Official C# SDK for the Speech Revolutions speech-to-text API</Description>
+    <PackageId>SpeechRevolutions</PackageId>
+    <Authors>Speech Revolutions</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>speech-to-text;stt;transcription;whisper;asr</PackageTags>
+    <PackageProjectUrl>https://speechrevolutions.com</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/speechrevolutions/csharp-sdk</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>

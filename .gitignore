@@ -1,0 +1,14 @@
+## .NET build artifacts
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+
+## NuGet / packaging
+*.nupkg
+*.snupkg
+
+## Rider / VS Code
+.idea/
+*.DotSettings.user
