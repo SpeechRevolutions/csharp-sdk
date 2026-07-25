@@ -22,13 +22,21 @@ public sealed class SttClient : IDisposable
     private readonly string _apiKey;
     private readonly string _baseUrl;
     private readonly TimeSpan _timeout;
+    private readonly bool _multipart;
+
+    /// <summary>Internal signal that a multipart upload should fall back to single-shot.</summary>
+    private sealed class MultipartUnavailableException : Exception { }
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true,
     };
 
-    public SttClient(string? apiKey = null, string? baseUrl = null, TimeSpan? timeout = null, HttpClient? httpClient = null)
+    /// <param name="multipart">
+    /// Prefer S3 multipart uploads and fall back to a single presigned PUT if the
+    /// server has multipart disabled or a multipart upload fails mid-flight. Default true.
+    /// </param>
+    public SttClient(string? apiKey = null, string? baseUrl = null, TimeSpan? timeout = null, HttpClient? httpClient = null, bool multipart = true)
     {
         apiKey ??= Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_API_KEY")
                    ?? Environment.GetEnvironmentVariable("STT_API_KEY");
@@ -41,6 +49,7 @@ public sealed class SttClient : IDisposable
         _timeout = timeout ?? TimeSpan.FromSeconds(600);
         _ownsHttp = httpClient is null;
         _http = httpClient ?? new HttpClient();
+        _multipart = multipart;
     }
 
     // High-level
@@ -84,8 +93,6 @@ public sealed class SttClient : IDisposable
         options ??= new TranscribeOptions();
         var outputType = options.OutputType.ToApiValue();
 
-        var job = await CreateUploadJobAsync(audio.Length, options, cancellationToken);
-
         // Upload progress: a byte "Uploading" bar (when Progress is on) and/or
         // the OnUploadProgress callback. Both compose.
         var uploadPrinter = options.Progress
@@ -94,16 +101,16 @@ public sealed class SttClient : IDisposable
         Action<ProgressEvent>? uploadCb = uploadPrinter is not null
             ? uploadPrinter.Report
             : options.OnUploadProgress;
+        string jobId;
+        string jobDownloadUrl;
         try
         {
-            await UploadAudioAsync(job.UploadUrl, audio, job.JobId, onProgress: uploadCb, cancellationToken: cancellationToken);
+            (jobId, jobDownloadUrl) = await IngestUploadAsync(audio, options, uploadCb, cancellationToken);
         }
         finally
         {
             uploadPrinter?.Close();
         }
-
-        await CompleteUploadAsync(job.JobId, cancellationToken);
 
         // Transcription progress: a "Transcribing" bar (when Progress is on)
         // and/or the onProgress callback.
@@ -115,14 +122,14 @@ public sealed class SttClient : IDisposable
         string downloadUrl;
         try
         {
-            (content, downloadUrl) = await WaitForResultAsync(job.JobId, job.DownloadUrl, progressCb, cancellationToken);
+            (content, downloadUrl) = await WaitForResultAsync(jobId, jobDownloadUrl, progressCb, cancellationToken);
         }
         finally
         {
             printer?.Close();
         }
 
-        return TranscriptResult.FromContent(job.JobId, content, outputType, downloadUrl);
+        return TranscriptResult.FromContent(jobId, content, outputType, downloadUrl);
     }
 
     /// <summary>
@@ -161,7 +168,6 @@ public sealed class SttClient : IDisposable
             throw new ArgumentException("Audio is empty", nameof(audio));
 
         options ??= new TranscribeOptions();
-        var job = await CreateUploadJobAsync(audio.Length, options, cancellationToken);
 
         var uploadPrinter = options.Progress
             ? new ProgressPrinter(options.OnUploadProgress, "Uploading", bytesMode: true)
@@ -171,25 +177,20 @@ public sealed class SttClient : IDisposable
             : options.OnUploadProgress;
         try
         {
-            await UploadAudioAsync(job.UploadUrl, audio, job.JobId, onProgress: uploadCb, cancellationToken: cancellationToken);
+            var (jobId, _) = await IngestUploadAsync(audio, options, uploadCb, cancellationToken);
+            return jobId;
         }
         finally
         {
             uploadPrinter?.Close();
         }
-
-        await CompleteUploadAsync(job.JobId, cancellationToken);
-        return job.JobId;
     }
 
     // Upload flow
 
-    public async Task<UploadJob> CreateUploadJobAsync(
-        int fileSize,
-        TranscribeOptions? options = null,
-        CancellationToken cancellationToken = default)
+    /// <summary>JSON body shared by the single-shot and multipart create endpoints.</summary>
+    private static Dictionary<string, object?> BuildUploadPayload(int fileSize, TranscribeOptions options)
     {
-        options ??= new TranscribeOptions();
         var payload = new Dictionary<string, object?>
         {
             ["file_size"] = fileSize,
@@ -203,6 +204,116 @@ public sealed class SttClient : IDisposable
             payload["custom_vocabulary"] = options.CustomVocabulary;
         if (!string.IsNullOrEmpty(options.CallbackUrl))
             payload["callback_url"] = options.CallbackUrl;
+        return payload;
+    }
+
+    /// <summary>
+    /// Get audio into the platform and return (jobId, downloadUrl). Prefers a
+    /// multipart upload (when enabled) and falls back to a single presigned PUT if
+    /// the server has multipart disabled or a multipart upload fails mid-flight.
+    /// </summary>
+    private async Task<(string JobId, string DownloadUrl)> IngestUploadAsync(
+        byte[] data, TranscribeOptions options, Action<ProgressEvent>? uploadCb, CancellationToken ct)
+    {
+        if (_multipart)
+        {
+            try
+            {
+                return await UploadMultipartAsync(data, options, uploadCb, ct);
+            }
+            catch (MultipartUnavailableException)
+            {
+                // multipart unavailable — fall through to the single-shot path
+            }
+        }
+        var job = await CreateUploadJobAsync(data.Length, options, ct);
+        await UploadAudioAsync(job.UploadUrl, data, job.JobId, onProgress: uploadCb, cancellationToken: ct);
+        await CompleteUploadAsync(job.JobId, ct);
+        return (job.JobId, job.DownloadUrl);
+    }
+
+    /// <summary>
+    /// S3 multipart flow: create -> PUT each part -> complete. Throws
+    /// <see cref="MultipartUnavailableException"/> when the server has multipart
+    /// disabled (404) or a mid-flight failure means we should retry via single-shot.
+    /// </summary>
+    private async Task<(string JobId, string DownloadUrl)> UploadMultipartAsync(
+        byte[] data, TranscribeOptions options, Action<ProgressEvent>? uploadCb, CancellationToken ct)
+    {
+        JsonElement created;
+        try
+        {
+            using var doc = await ApiRequestAsync(
+                HttpMethod.Post, "/api/v1/upload/multipart/create", BuildUploadPayload(data.Length, options), ct);
+            created = doc.RootElement.Clone();
+        }
+        catch (JobNotFoundException) // route returns 404 when multipart is disabled
+        {
+            throw new MultipartUnavailableException();
+        }
+
+        var jobId = created.GetProperty("job_id").ToString();
+        var partSize = created.GetProperty("part_size").GetInt32();
+        var completed = new List<Dictionary<string, object?>>();
+        var total = data.Length;
+        var uploaded = 0;
+        try
+        {
+            foreach (var part in created.GetProperty("parts").EnumerateArray())
+            {
+                var number = part.GetProperty("part_number").GetInt32();
+                var url = part.GetProperty("url").GetString()!;
+                var start = (number - 1) * partSize;
+                var length = Math.Min(partSize, total - start);
+                var etag = await PutPartAsync(url, data, start, length, ct);
+                completed.Add(new Dictionary<string, object?> { ["part_number"] = number, ["etag"] = etag });
+                uploaded += length;
+                uploadCb?.Invoke(new ProgressEvent { Completed = uploaded, Total = total, Step = "upload" });
+            }
+            using var _ = await ApiRequestAsync(
+                HttpMethod.Post, "/api/v1/upload/multipart/complete",
+                new { job_id = jobId, parts = completed }, ct);
+        }
+        catch (Exception)
+        {
+            // Roll back the partial upload, then fall back to a single-shot PUT.
+            try
+            {
+                using var _ = await ApiRequestAsync(
+                    HttpMethod.Post, "/api/v1/upload/multipart/abort", new { job_id = jobId }, ct);
+            }
+            catch { /* best effort */ }
+            throw new MultipartUnavailableException();
+        }
+
+        return (jobId, created.GetProperty("download_url").GetString()!);
+    }
+
+    /// <summary>PUT one part to its presigned URL and return the S3 ETag.</summary>
+    private async Task<string> PutPartAsync(string url, byte[] data, int offset, int length, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Put, url)
+        {
+            Content = new ByteArrayContent(data, offset, length),
+        };
+        using var resp = await _http.SendAsync(req, ct);
+        if (resp.StatusCode is not (System.Net.HttpStatusCode.OK or System.Net.HttpStatusCode.NoContent))
+            throw new UploadException($"part upload failed (HTTP {(int)resp.StatusCode})");
+        var etag = resp.Headers.ETag?.ToString();
+        if (string.IsNullOrEmpty(etag) && resp.Headers.TryGetValues("ETag", out var vals))
+            etag = System.Linq.Enumerable.FirstOrDefault(vals);
+        if (string.IsNullOrEmpty(etag))
+            throw new UploadException("part upload response missing ETag header");
+        return etag;
+    }
+
+    public async Task<UploadJob> CreateUploadJobAsync(
+        int fileSize,
+        TranscribeOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        options ??= new TranscribeOptions();
+        var payload = BuildUploadPayload(fileSize, options);
 
         using var doc = await ApiRequestAsync(HttpMethod.Post, "/api/v1/upload", payload, cancellationToken);
         var root = doc.RootElement;
