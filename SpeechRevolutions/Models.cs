@@ -100,17 +100,10 @@ public sealed class JobList
 public sealed class UploadJob
 {
     public required string JobId { get; init; }
-    /// <summary>Either a URL string or a <see cref="PresignedPost"/>.</summary>
-    public required object UploadUrl { get; init; }
+    public required string UploadUrl { get; init; }
     public required string DownloadUrl { get; init; }
     public string ContentType { get; init; } = "application/octet-stream";
     public int ExpiresIn { get; init; }
-}
-
-public sealed class PresignedPost
-{
-    public required string Url { get; init; }
-    public Dictionary<string, string>? Fields { get; init; }
 }
 
 public sealed class ProgressEvent
@@ -186,7 +179,7 @@ public sealed class TranscriptResult
             if (Utterances.Count > 0)
                 return string.Join(" ", Utterances.Select(u => u.Text).Where(t => !string.IsNullOrEmpty(t)));
             if (Words.Count > 0)
-                return string.Join(" ", Words.Select(w => w.Text));
+                return JoinWords(Words);
             try { return System.Text.Encoding.UTF8.GetString(Content); }
             catch { return ""; }
         }
@@ -202,6 +195,63 @@ public sealed class TranscriptResult
         var outPath = name.Contains('.') ? path : $"{path}.{OutputType}";
         await File.WriteAllBytesAsync(outPath, Content, ct);
         return outPath;
+    }
+
+    /// <summary>Normalized dictionary of the result (AssemblyAI-inspired).</summary>
+    public Dictionary<string, object?> ToDict()
+    {
+        var d = new Dictionary<string, object?>
+        {
+            ["id"] = JobId,
+            ["status"] = "completed",
+            ["text"] = Text,
+            ["words"] = Words,
+            ["utterances"] = Utterances,
+            ["output_type"] = OutputType,
+        };
+        if (Languages.Count > 0) d["languages"] = Languages;
+        return d;
+    }
+
+    /// <summary>The result reshaped as a Deepgram pre-recorded response.</summary>
+    public Dictionary<string, object?> ToDeepgram()
+    {
+        var dgWords = Words.Select(w =>
+        {
+            var item = new Dictionary<string, object?>
+            {
+                ["word"] = w.Text.ToLowerInvariant().TrimEnd('.', ',', '!', '?', ';', ':'),
+                ["punctuated_word"] = w.Text,
+            };
+            if (w.Start is not null) item["start"] = w.Start;
+            if (w.End is not null) item["end"] = w.End;
+            if (w.Speaker is not null) item["speaker"] = w.Speaker;
+            return item;
+        }).ToList();
+
+        return new Dictionary<string, object?>
+        {
+            ["metadata"] = new Dictionary<string, object?> { ["request_id"] = JobId, ["channels"] = 1 },
+            ["results"] = new Dictionary<string, object?>
+            {
+                ["channels"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["alternatives"] = new[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["transcript"] = Text,
+                                ["confidence"] = 1.0,
+                                ["words"] = dgWords,
+                            },
+                        },
+                    },
+                },
+                ["utterances"] = Utterances,
+            },
+        };
     }
 
     public static TranscriptResult FromContent(string jobId, byte[] content, string outputType, string downloadUrl)
@@ -256,7 +306,7 @@ public sealed class TranscriptResult
                 }
             }
 
-            var utterances = BuildUtterances(words);
+            doc.RootElement.TryGetProperty("diarization", out var diarization);
             return new TranscriptResult
             {
                 JobId = jobId,
@@ -264,10 +314,10 @@ public sealed class TranscriptResult
                 DownloadUrl = downloadUrl,
                 OutputType = outputType,
                 Words = words,
-                Utterances = utterances,
+                Utterances = BuildUtterances(words, diarization),
                 Languages = languages,
                 RawJson = System.Text.Encoding.UTF8.GetString(content),
-                Text = string.Join(" ", words.Select(w => w.Text)),
+                Text = JoinWords(words),
             };
         }
         catch
@@ -282,6 +332,67 @@ public sealed class TranscriptResult
         }
     }
 
+    /// <summary>
+    /// Prefers the server's diarization segments, which separate turns the
+    /// speaker labels alone cannot (the same speaker talking twice). Falls back
+    /// to grouping consecutive words by speaker.
+    /// </summary>
+    private static List<Utterance> BuildUtterances(List<Word> words, System.Text.Json.JsonElement diarization)
+    {
+        if (diarization.ValueKind != System.Text.Json.JsonValueKind.Array) return BuildUtterances(words);
+
+        var segments = new List<Utterance>();
+        foreach (var el in diarization.EnumerateArray())
+        {
+            if (!el.TryGetProperty("start", out var s) || !s.TryGetDouble(out var start)) continue;
+            if (!el.TryGetProperty("end", out var e) || !e.TryGetDouble(out var end)) continue;
+
+            var segWords = WordsWithin(words, start, end);
+            segments.Add(new Utterance
+            {
+                Text = JoinWords(segWords),
+                Speaker = el.TryGetProperty("speaker", out var sp) ? sp.ToString() : null,
+                Start = start,
+                End = end,
+                Words = segWords,
+            });
+        }
+        return segments.Count > 0 ? segments : BuildUtterances(words);
+    }
+
+    /// <summary>
+    /// Words a segment covers, falling back to a midpoint test for words that
+    /// straddle the boundary.
+    /// </summary>
+    private static List<Word> WordsWithin(List<Word> words, double start, double end)
+    {
+        const double eps = 1e-3;
+        var inside = words
+            .Where(w => w.Start is not null && w.End is not null && w.Start >= start - eps && w.End <= end + eps)
+            .ToList();
+        if (inside.Count > 0) return inside;
+
+        return words
+            .Where(w => w.Start is not null && w.End is not null &&
+                        (w.Start + w.End) / 2 >= start && (w.Start + w.End) / 2 <= end)
+            .ToList();
+    }
+
+    /// <summary>Joins words with spaces, attaching trailing punctuation.</summary>
+    private static string JoinWords(IReadOnlyList<Word> words)
+    {
+        var parts = new List<string>();
+        foreach (var w in words)
+        {
+            if (string.IsNullOrEmpty(w.Text)) continue;
+            if (parts.Count > 0 && ".,!?;:%)]}'\"".Contains(w.Text[0]))
+                parts[^1] += w.Text;
+            else
+                parts.Add(w.Text);
+        }
+        return string.Join(" ", parts);
+    }
+
     private static List<Utterance> BuildUtterances(List<Word> words)
     {
         if (words.Count == 0) return new();
@@ -291,7 +402,7 @@ public sealed class TranscriptResult
             {
                 new()
                 {
-                    Text = string.Join(" ", words.Select(w => w.Text)),
+                    Text = JoinWords(words),
                     Start = words[0].Start,
                     End = words[^1].End,
                     Words = words,
@@ -316,7 +427,7 @@ public sealed class TranscriptResult
 
     private static Utterance FromGroup(List<Word> group) => new()
     {
-        Text = string.Join(" ", group.Select(w => w.Text)),
+        Text = JoinWords(group),
         Speaker = group[0].Speaker,
         Start = group[0].Start,
         End = group[^1].End,

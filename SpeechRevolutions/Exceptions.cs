@@ -2,6 +2,15 @@ namespace SpeechRevolutions;
 
 public class SttException : Exception
 {
+    /// <summary>HTTP status that produced the error, when there was one.</summary>
+    public int? StatusCode { get; init; }
+
+    /// <summary>Correlates the failure with server-side logs.</summary>
+    public string? RequestId { get; init; }
+
+    /// <summary>Truncated response body, when there was one.</summary>
+    public string? Body { get; init; }
+
     public SttException(string message) : base(message) { }
     public SttException(string message, Exception inner) : base(message, inner) { }
 }
@@ -13,6 +22,9 @@ public class AuthenticationException : SttException
 
 public class RateLimitException : SttException
 {
+    /// <summary>The server's Retry-After hint in seconds, when it sent one.</summary>
+    public double? RetryAfter { get; init; }
+
     public RateLimitException(string message = "Rate limit exceeded — try again shortly") : base(message) { }
 }
 
@@ -45,9 +57,6 @@ public class JobTimeoutException : SttException
 
 public class ApiException : SttException
 {
-    public int? StatusCode { get; }
-    public string? Body { get; }
-
     public ApiException(string message, int? statusCode = null, string? body = null) : base(message)
     {
         StatusCode = statusCode;

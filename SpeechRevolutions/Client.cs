@@ -17,12 +17,20 @@ public sealed class SttClient : IDisposable
     private static readonly TimeSpan SseReconnectDelay = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
+    private const int DefaultMaxRetries = 3;
+    private static readonly TimeSpan DefaultRetryBackoff = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan RetryBackoffMax = TimeSpan.FromSeconds(30);
+    private static readonly int[] RetryStatusCodes = { 429, 500, 502, 503, 504 };
+    private static readonly string[] RequestIdHeaders = { "x-request-id", "x-amzn-requestid", "cf-ray" };
+
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly string _apiKey;
     private readonly string _baseUrl;
     private readonly TimeSpan _timeout;
     private readonly bool _multipart;
+    private readonly int _maxRetries;
+    private readonly TimeSpan _retryBackoff;
 
     /// <summary>Internal signal that a multipart upload should fall back to single-shot.</summary>
     private sealed class MultipartUnavailableException : Exception { }
@@ -36,7 +44,19 @@ public sealed class SttClient : IDisposable
     /// Prefer S3 multipart uploads and fall back to a single presigned PUT if the
     /// server has multipart disabled or a multipart upload fails mid-flight. Default true.
     /// </param>
-    public SttClient(string? apiKey = null, string? baseUrl = null, TimeSpan? timeout = null, HttpClient? httpClient = null, bool multipart = true)
+    /// <param name="maxRetries">
+    /// Extra attempts for a JSON API request that fails to connect or returns
+    /// 429/5xx. Uploads and the progress stream have their own retry loops.
+    /// </param>
+    /// <param name="retryBackoff">First retry delay; doubles per attempt, capped at 30s.</param>
+    public SttClient(
+        string? apiKey = null,
+        string? baseUrl = null,
+        TimeSpan? timeout = null,
+        HttpClient? httpClient = null,
+        bool multipart = true,
+        int maxRetries = DefaultMaxRetries,
+        TimeSpan? retryBackoff = null)
     {
         apiKey ??= Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_API_KEY")
                    ?? Environment.GetEnvironmentVariable("STT_API_KEY");
@@ -50,36 +70,51 @@ public sealed class SttClient : IDisposable
         _ownsHttp = httpClient is null;
         _http = httpClient ?? new HttpClient();
         _multipart = multipart;
+        _maxRetries = Math.Max(0, maxRetries);
+        _retryBackoff = retryBackoff ?? DefaultRetryBackoff;
     }
 
     // High-level
 
+    /// <summary>
+    /// Transcribe a local file path or an http(s) URL. A URL is handed to the
+    /// platform to fetch, so nothing is uploaded from here.
+    /// </summary>
     public async Task<TranscriptResult> TranscribeAsync(
         string audioPath,
         TranscribeOptions? options = null,
         Action<ProgressEvent>? onProgress = null,
         CancellationToken cancellationToken = default)
     {
-        if (audioPath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            audioPath.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            using var resp = await _http.GetAsync(audioPath, cancellationToken);
-            var data = await resp.Content.ReadAsByteArrayAsync(cancellationToken);
-            if (!resp.IsSuccessStatusCode)
-                throw new ApiException($"Failed to download audio URL (HTTP {(int)resp.StatusCode})", (int)resp.StatusCode);
-            return await TranscribeAsync(data, options, onProgress, cancellationToken);
-        }
+        if (IsUrl(audioPath))
+            return await TranscribeUrlAsync(audioPath, options, onProgress, cancellationToken);
 
         var fileData = await File.ReadAllBytesAsync(audioPath, cancellationToken);
         return await TranscribeAsync(fileData, options, onProgress, cancellationToken);
     }
 
-    public Task<TranscriptResult> TranscribeUrlAsync(
+    /// <summary>
+    /// Transcribe audio the platform fetches from a public http(s) URL, then wait
+    /// for the result.
+    /// </summary>
+    public async Task<TranscriptResult> TranscribeUrlAsync(
         string url,
         TranscribeOptions? options = null,
         Action<ProgressEvent>? onProgress = null,
         CancellationToken cancellationToken = default)
-        => TranscribeAsync(url, options, onProgress, cancellationToken);
+    {
+        options ??= new TranscribeOptions();
+        var (jobId, jobDownloadUrl) = await SubmitUrlAsync(url, options, cancellationToken);
+        return await AwaitTranscriptAsync(jobId, jobDownloadUrl, options, onProgress, cancellationToken);
+    }
+
+    /// <summary>Alias for <see cref="TranscribeAsync(string, TranscribeOptions?, Action{ProgressEvent}?, CancellationToken)"/> with a local path.</summary>
+    public Task<TranscriptResult> TranscribeFileAsync(
+        string path,
+        TranscribeOptions? options = null,
+        Action<ProgressEvent>? onProgress = null,
+        CancellationToken cancellationToken = default)
+        => TranscribeAsync(path, options, onProgress, cancellationToken);
 
     public async Task<TranscriptResult> TranscribeAsync(
         byte[] audio,
@@ -91,7 +126,6 @@ public sealed class SttClient : IDisposable
             throw new ArgumentException("Audio is empty", nameof(audio));
 
         options ??= new TranscribeOptions();
-        var outputType = options.OutputType.ToApiValue();
 
         // Upload progress: a byte "Uploading" bar (when Progress is on) and/or
         // the OnUploadProgress callback. Both compose.
@@ -112,8 +146,17 @@ public sealed class SttClient : IDisposable
             uploadPrinter?.Close();
         }
 
-        // Transcription progress: a "Transcribing" bar (when Progress is on)
-        // and/or the onProgress callback.
+        return await AwaitTranscriptAsync(jobId, jobDownloadUrl, options, onProgress, cancellationToken);
+    }
+
+    /// <summary>Waits out the transcription phase and parses the result.</summary>
+    private async Task<TranscriptResult> AwaitTranscriptAsync(
+        string jobId,
+        string jobDownloadUrl,
+        TranscribeOptions options,
+        Action<ProgressEvent>? onProgress,
+        CancellationToken cancellationToken)
+    {
         var printer = options.Progress
             ? new ProgressPrinter(onProgress, "Transcribing", bytesMode: false)
             : null;
@@ -129,7 +172,7 @@ public sealed class SttClient : IDisposable
             printer?.Close();
         }
 
-        return TranscriptResult.FromContent(jobId, content, outputType, downloadUrl);
+        return TranscriptResult.FromContent(jobId, content, options.OutputType.ToApiValue(), downloadUrl);
     }
 
     /// <summary>
@@ -144,19 +187,34 @@ public sealed class SttClient : IDisposable
         TranscribeOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (audioPath.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            audioPath.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        if (IsUrl(audioPath))
         {
-            using var resp = await _http.GetAsync(audioPath, cancellationToken);
-            var data = await resp.Content.ReadAsByteArrayAsync(cancellationToken);
-            if (!resp.IsSuccessStatusCode)
-                throw new ApiException($"Failed to download audio URL (HTTP {(int)resp.StatusCode})", (int)resp.StatusCode);
-            return await SubmitAsync(data, options, cancellationToken);
+            var (jobId, _) = await SubmitUrlAsync(audioPath, options ?? new TranscribeOptions(), cancellationToken);
+            return jobId;
         }
 
         var fileData = await File.ReadAllBytesAsync(audioPath, cancellationToken);
         return await SubmitAsync(fileData, options, cancellationToken);
     }
+
+    /// <summary>
+    /// Registers a job the platform fetches itself, returning (jobId, downloadUrl).
+    /// No bytes leave this process.
+    /// </summary>
+    private async Task<(string JobId, string DownloadUrl)> SubmitUrlAsync(
+        string audioUrl, TranscribeOptions options, CancellationToken ct)
+    {
+        var payload = BuildUploadPayload(null, options);
+        payload["audio_url"] = audioUrl;
+
+        using var doc = await ApiRequestAsync(HttpMethod.Post, "/api/v1/upload", payload, ct);
+        var root = doc.RootElement;
+        return (root.GetProperty("job_id").ToString(), root.GetProperty("download_url").GetString()!);
+    }
+
+    private static bool IsUrl(string s) =>
+        s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+        s.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Submit raw audio bytes without waiting; returns the job id.</summary>
     public async Task<string> SubmitAsync(
@@ -189,17 +247,18 @@ public sealed class SttClient : IDisposable
     // Upload flow
 
     /// <summary>JSON body shared by the single-shot and multipart create endpoints.</summary>
-    private static Dictionary<string, object?> BuildUploadPayload(int fileSize, TranscribeOptions options)
+    private static Dictionary<string, object?> BuildUploadPayload(int? fileSize, TranscribeOptions options)
     {
         var payload = new Dictionary<string, object?>
         {
-            ["file_size"] = fileSize,
             ["output_type"] = options.OutputType.ToApiValue(),
             ["word_timestamps"] = options.WordTimestamps,
             ["speaker_labels"] = options.EffectiveSpeakerLabels,
             ["nltk"] = options.Nltk,
             ["tier"] = options.Tier.ToApiValue(),
         };
+        if (fileSize is not null)
+            payload["file_size"] = fileSize.Value;
         if (options.CustomVocabulary is { Count: > 0 })
             payload["custom_vocabulary"] = options.CustomVocabulary;
         if (!string.IsNullOrEmpty(options.CallbackUrl))
@@ -274,19 +333,33 @@ public sealed class SttClient : IDisposable
                 HttpMethod.Post, "/api/v1/upload/multipart/complete",
                 new { job_id = jobId, parts = completed }, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await AbortMultipartAsync(jobId);
+            throw;
+        }
         catch (Exception)
         {
             // Roll back the partial upload, then fall back to a single-shot PUT.
-            try
-            {
-                using var _ = await ApiRequestAsync(
-                    HttpMethod.Post, "/api/v1/upload/multipart/abort", new { job_id = jobId }, ct);
-            }
-            catch { /* best effort */ }
+            await AbortMultipartAsync(jobId);
             throw new MultipartUnavailableException();
         }
 
         return (jobId, created.GetProperty("download_url").GetString()!);
+    }
+
+    /// <summary>
+    /// Best-effort discard of an in-progress multipart upload. Runs uncancelled
+    /// so a cancelled caller still cleans up.
+    /// </summary>
+    private async Task AbortMultipartAsync(string jobId)
+    {
+        try
+        {
+            using var _ = await ApiRequestAsync(
+                HttpMethod.Post, "/api/v1/upload/multipart/abort", new { job_id = jobId }, CancellationToken.None);
+        }
+        catch { /* best effort */ }
     }
 
     /// <summary>PUT one part to its presigned URL and return the S3 ETag.</summary>
@@ -318,31 +391,10 @@ public sealed class SttClient : IDisposable
         using var doc = await ApiRequestAsync(HttpMethod.Post, "/api/v1/upload", payload, cancellationToken);
         var root = doc.RootElement;
 
-        object uploadUrl;
-        if (root.GetProperty("upload_url").ValueKind == JsonValueKind.String)
-        {
-            uploadUrl = root.GetProperty("upload_url").GetString()!;
-        }
-        else
-        {
-            var u = root.GetProperty("upload_url");
-            var fields = new Dictionary<string, string>();
-            if (u.TryGetProperty("fields", out var fieldsEl) && fieldsEl.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var p in fieldsEl.EnumerateObject())
-                    fields[p.Name] = p.Value.ToString();
-            }
-            uploadUrl = new PresignedPost
-            {
-                Url = u.GetProperty("url").GetString()!,
-                Fields = fields,
-            };
-        }
-
         return new UploadJob
         {
             JobId = root.GetProperty("job_id").ToString(),
-            UploadUrl = uploadUrl,
+            UploadUrl = root.GetProperty("upload_url").GetString()!,
             DownloadUrl = root.GetProperty("download_url").GetString()!,
             ContentType = root.TryGetProperty("content_type", out var ct) ? ct.GetString() ?? "application/octet-stream" : "application/octet-stream",
             ExpiresIn = root.TryGetProperty("expires_in", out var ex) ? ex.GetInt32() : 0,
@@ -355,7 +407,7 @@ public sealed class SttClient : IDisposable
     }
 
     public async Task UploadAudioAsync(
-        object uploadUrl,
+        string uploadUrl,
         byte[] data,
         string? jobId = null,
         string contentType = "application/octet-stream",
@@ -376,17 +428,18 @@ public sealed class SttClient : IDisposable
             {
                 try
                 {
-                    await PutOrPostUploadAsync(uploadUrl, data, contentType, onProgress, cancellationToken);
+                    await PutUploadAsync(uploadUrl, data, contentType, onProgress, cancellationToken);
                     return;
                 }
-                catch (Exception ex) when (attempt < UploadMaxAttempts)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    last = ex;
-                    await Task.Delay(UploadBaseDelay * (1 << (attempt - 1)), cancellationToken);
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     last = ex;
+                    if (attempt < UploadMaxAttempts)
+                        await Task.Delay(UploadBaseDelay * (1 << (attempt - 1)), cancellationToken);
                 }
             }
         }
@@ -547,55 +600,115 @@ public sealed class SttClient : IDisposable
         catch (OperationCanceledException) { /* expected */ }
     }
 
+    /// <summary>
+    /// Sends a JSON request, retrying transient failures and 429/5xx responses
+    /// with exponential backoff (honoring Retry-After).
+    /// </summary>
     private async Task<JsonDocument> ApiRequestAsync(
         HttpMethod method,
         string path,
         object? body,
         CancellationToken cancellationToken)
     {
-        using var req = new HttpRequestMessage(method, $"{_baseUrl}{path}");
-        req.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
-        if (body is not null)
-        {
-            var json = JsonSerializer.Serialize(body);
-            req.Content = new StringContent(json, Encoding.UTF8, "application/json");
-        }
+        var json = body is null ? null : JsonSerializer.Serialize(body);
 
-        HttpResponseMessage resp;
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            resp = await _http.SendAsync(req, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            throw new ApiException($"Cannot connect to {_baseUrl}: {ex.Message}");
-        }
+            using var req = new HttpRequestMessage(method, $"{_baseUrl}{path}");
+            req.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
+            if (json is not null)
+                req.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        using (resp)
-        {
-            var text = await resp.Content.ReadAsStringAsync(cancellationToken);
-            RaiseForStatus((int)resp.StatusCode, text);
-            if (string.IsNullOrWhiteSpace(text))
-                return JsonDocument.Parse("{}");
-            return JsonDocument.Parse(text);
+            HttpResponseMessage resp;
+            try
+            {
+                resp = await _http.SendAsync(req, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (attempt <= _maxRetries)
+                {
+                    await Task.Delay(RetryDelay(attempt, null), cancellationToken);
+                    continue;
+                }
+                throw new ApiException($"Cannot connect to {_baseUrl}: {ex.Message}");
+            }
+
+            using (resp)
+            {
+                var status = (int)resp.StatusCode;
+                if (Array.IndexOf(RetryStatusCodes, status) >= 0 && attempt <= _maxRetries)
+                {
+                    await Task.Delay(RetryDelay(attempt, RetryAfterSeconds(resp)), cancellationToken);
+                    continue;
+                }
+
+                var text = await resp.Content.ReadAsStringAsync(cancellationToken);
+                RaiseForStatus(resp, text);
+                if (string.IsNullOrWhiteSpace(text))
+                    return JsonDocument.Parse("{}");
+                return JsonDocument.Parse(text);
+            }
         }
     }
 
-    private static void RaiseForStatus(int status, string body)
+    private TimeSpan RetryDelay(int attempt, double? retryAfterSeconds)
     {
+        if (retryAfterSeconds is not null)
+            return TimeSpan.FromSeconds(Math.Min(retryAfterSeconds.Value, RetryBackoffMax.TotalSeconds));
+        var ms = _retryBackoff.TotalMilliseconds * Math.Pow(2, attempt - 1);
+        return TimeSpan.FromMilliseconds(Math.Min(ms, RetryBackoffMax.TotalMilliseconds));
+    }
+
+    /// <summary>Retry-After in delta-seconds form; the HTTP-date form is not honored.</summary>
+    private static double? RetryAfterSeconds(HttpResponseMessage resp)
+    {
+        if (!resp.Headers.TryGetValues("Retry-After", out var values)) return null;
+        var raw = values.FirstOrDefault();
+        return double.TryParse(raw, out var secs) && secs >= 0 ? secs : null;
+    }
+
+    private static string? RequestIdOf(HttpResponseMessage resp)
+    {
+        foreach (var name in RequestIdHeaders)
+        {
+            if (resp.Headers.TryGetValues(name, out var values))
+            {
+                var v = values.FirstOrDefault();
+                if (!string.IsNullOrEmpty(v)) return v;
+            }
+        }
+        return null;
+    }
+
+    private static void RaiseForStatus(HttpResponseMessage resp, string body)
+    {
+        var status = (int)resp.StatusCode;
         if (status is 200 or 204) return;
+
         var truncated = Truncate(body, 300);
+        var requestId = RequestIdOf(resp);
         throw status switch
         {
-            401 => new AuthenticationException(),
-            404 => new JobNotFoundException(),
-            429 => new RateLimitException(),
-            _ => new ApiException($"Unexpected response (HTTP {status})", status, truncated),
+            401 => new AuthenticationException { StatusCode = 401, RequestId = requestId, Body = truncated },
+            404 => new JobNotFoundException { StatusCode = 404, RequestId = requestId, Body = truncated },
+            429 => new RateLimitException
+            {
+                StatusCode = 429,
+                RequestId = requestId,
+                Body = truncated,
+                RetryAfter = RetryAfterSeconds(resp),
+            },
+            _ => new ApiException($"Unexpected response (HTTP {status})", status, truncated) { RequestId = requestId },
         };
     }
 
-    private async Task PutOrPostUploadAsync(
-        object uploadUrl, byte[] data, string contentType, Action<ProgressEvent>? onProgress, CancellationToken ct)
+    private async Task PutUploadAsync(
+        string uploadUrl, byte[] data, string contentType, Action<ProgressEvent>? onProgress, CancellationToken ct)
     {
         // Adapt the ProgressEvent callback to a (sent, total) byte callback.
         // Upload events share the ProgressEvent shape with Step == "upload".
@@ -603,29 +716,9 @@ public sealed class SttClient : IDisposable
             ? null
             : (sent, total) => onProgress!(new ProgressEvent { Completed = sent, Total = total, Step = "upload" });
 
-        HttpResponseMessage resp;
-        if (uploadUrl is PresignedPost post)
-        {
-            using var form = new MultipartFormDataContent();
-            if (post.Fields is not null)
-            {
-                foreach (var (k, v) in post.Fields)
-                    form.Add(new StringContent(v), k);
-            }
-            // A fresh content per call so a retry restarts progress from 0.
-            var fileContent = new ProgressByteArrayContent(data, contentType, byteCb);
-            form.Add(fileContent, "file", "audio");
-            resp = await _http.PostAsync(post.Url, form, ct);
-        }
-        else if (uploadUrl is string url)
-        {
-            using var content = new ProgressByteArrayContent(data, contentType, byteCb);
-            resp = await _http.PutAsync(url, content, ct);
-        }
-        else
-        {
-            throw new UploadException($"Unsupported upload_url type: {uploadUrl.GetType().Name}");
-        }
+        // A fresh content per call so a retry restarts progress from 0.
+        using var content = new ProgressByteArrayContent(data, contentType, byteCb);
+        HttpResponseMessage resp = await _http.PutAsync(uploadUrl, content, ct);
 
         using (resp)
         {
@@ -697,6 +790,10 @@ public sealed class SttClient : IDisposable
         {
             resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
             return ("reconnect", null, lastEventId);
@@ -712,6 +809,7 @@ public sealed class SttClient : IDisposable
             using var reader = new StreamReader(stream);
 
             var current = new Dictionary<string, string>();
+            var dataLines = new List<string>();
             while (true)
             {
                 if (DateTime.UtcNow - start >= timeout)
@@ -719,6 +817,7 @@ public sealed class SttClient : IDisposable
 
                 string? line;
                 try { line = await reader.ReadLineAsync(ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch { return ("reconnect", null, lastEventId); }
 
                 if (line is null)
@@ -726,11 +825,13 @@ public sealed class SttClient : IDisposable
 
                 if (line.Length == 0)
                 {
-                    if (!current.TryGetValue("data", out var dataRaw))
+                    if (dataLines.Count == 0)
                     {
                         current.Clear();
                         continue;
                     }
+                    var dataRaw = string.Join("\n", dataLines);
+                    dataLines.Clear();
 
                     var eventType = current.GetValueOrDefault("event", "message");
                     if (current.TryGetValue("id", out var id))
@@ -790,7 +891,9 @@ public sealed class SttClient : IDisposable
                     value = line[(colon + 1)..];
                     if (value.StartsWith(' ')) value = value[1..];
                 }
-                current[field] = value;
+
+                if (field == "data") dataLines.Add(value);
+                else current[field] = value;
             }
         }
     }
@@ -820,6 +923,7 @@ public sealed class SttClient : IDisposable
                 if (resp.IsSuccessStatusCode)
                     return await resp.Content.ReadAsByteArrayAsync(ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch { /* ignore probe errors */ }
 
             if (attempt < maxAttempts)

@@ -35,10 +35,12 @@ foreach (var u in result.Utterances)
 
 ```csharp
 var result = await client.TranscribeUrlAsync("https://example.com/audio.mp3");
-// or just pass the URL to TranscribeAsync — http(s):// paths are downloaded:
+// or just pass the URL to TranscribeAsync — http(s):// paths are detected:
 var same = await client.TranscribeAsync("https://example.com/audio.mp3");
 ```
 
+The platform fetches the URL itself — the audio never passes through your
+process. `TranscribeFileAsync` is the same for a local path, and
 `TranscribeAsync` also accepts a `byte[]` overload for in-memory audio.
 
 ## Options
@@ -140,6 +142,8 @@ Default `OutputType` is `Json`, which the SDK parses into a transcript-first
 | `result.Transcript` | Deepgram-style alias |
 | `result.Words` | word + `Start` / `End` / `Speaker` |
 | `result.Utterances` | AssemblyAI-style speaker turns |
+| `result.ToDeepgram()` | Deepgram-shaped dictionary |
+| `result.ToDict()` | normalized dictionary |
 | `result.Content` | raw response bytes |
 | `await result.SaveAsync(path)` | write to disk |
 
@@ -150,6 +154,26 @@ own.
 ```csharp
 var outPath = await result.SaveAsync("output"); // -> output.json
 ```
+
+## Timeouts and retries
+
+Every method takes a `CancellationToken`; cancelling one surfaces as
+`OperationCanceledException`, as .NET callers expect.
+
+JSON API requests that fail to connect or return 429/500/502/503/504 are retried
+with exponential backoff, honoring `Retry-After`. Uploads and the progress
+stream have their own retry loops.
+
+```csharp
+var client = new SttClient(
+    timeout: TimeSpan.FromMinutes(10),      // whole-job wait (SSE + polling)
+    maxRetries: 3,                          // extra attempts per API request
+    retryBackoff: TimeSpan.FromMilliseconds(500),
+    httpClient: myHttpClient);               // proxies, handlers, tracing
+```
+
+Errors carry `StatusCode`, `RequestId` and `Body` where the server supplied
+them; `RateLimitException.RetryAfter` holds the server's hint in seconds.
 
 ## Auth
 
