@@ -308,4 +308,124 @@ public class LiveTests
             listener.Close();
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Ingestion paths, output types, options and transforms
+    //
+    // The tests above cover the path most callers take. These cover the rest of
+    // the published surface, so that "tested live" means every public method has
+    // actually been run against production rather than only the common ones.
+    //
+    // The URL tests need a PUBLICLY reachable audio file, because the platform
+    // fetches it server-side: SR_LIVE_AUDIO_URL=https://.../clip.mp3
+    // -----------------------------------------------------------------------
+
+    private static string AudioUrl()
+    {
+        var url = Environment.GetEnvironmentVariable("SR_LIVE_AUDIO_URL");
+        Skip.If(string.IsNullOrEmpty(url),
+            "set SR_LIVE_AUDIO_URL to a publicly reachable audio file "
+            + "(the platform fetches it server-side, so a local path will not do)");
+        return url!;
+    }
+
+    [SkippableFact]
+    public async Task TranscribeUrlIsFetchedServerSide()
+    {
+        using var client = Client();
+        var url = AudioUrl();
+
+        var explicitCall = await client.TranscribeUrlAsync(url);
+        Assert.False(string.IsNullOrWhiteSpace(explicitCall.Text));
+
+        // TranscribeAsync auto-detects an http(s) URL and must take the same path.
+        var auto = await client.TranscribeAsync(url);
+        Assert.False(string.IsNullOrWhiteSpace(auto.Text));
+    }
+
+    [SkippableFact]
+    public async Task TranscribeFileAlias()
+    {
+        using var client = Client();
+        var result = await client.TranscribeFileAsync(Audio());
+        Assert.False(string.IsNullOrWhiteSpace(result.Text));
+    }
+
+    /// <summary>Only SRT had ever been checked live, and docx/pdf render server-side.</summary>
+    [SkippableTheory]
+    [InlineData(OutputType.Json, null)]
+    [InlineData(OutputType.Txt, null)]
+    [InlineData(OutputType.Srt, "-->")]
+    [InlineData(OutputType.Vtt, "-->")]
+    [InlineData(OutputType.Docx, null)]
+    [InlineData(OutputType.Pdf, null)]
+    public async Task EveryOutputType(OutputType outputType, string? contains)
+    {
+        using var client = Client();
+        var result = await client.TranscribeAsync(Audio(),
+            new TranscribeOptions { OutputType = outputType });
+
+        Assert.NotEmpty(result.Content);
+        if (contains is not null) Assert.Contains(contains, result.Text);
+
+        var head = Encoding.Latin1.GetString(result.Content, 0, Math.Min(4, result.Content.Length));
+        if (outputType == OutputType.Docx) Assert.StartsWith("PK", head);
+        if (outputType == OutputType.Pdf) Assert.StartsWith("%PDF", head);
+    }
+
+    [SkippableFact]
+    public async Task TranscribeOptionsAgainstTheRealModel()
+    {
+        using var client = Client();
+
+        // Diarize is the Deepgram-compatible alias for SpeakerLabels.
+        var diarized = await client.TranscribeAsync(Audio(),
+            new TranscribeOptions { Diarize = true });
+        Assert.NotEmpty(diarized.Utterances);
+
+        var vocab = await client.TranscribeAsync(Audio(),
+            new TranscribeOptions { CustomVocabulary = new[] { "Kyiv", "Dnipro" } });
+        Assert.False(string.IsNullOrWhiteSpace(vocab.Text));
+
+        var noTs = await client.TranscribeAsync(Audio(),
+            new TranscribeOptions { WordTimestamps = false });
+        Assert.False(string.IsNullOrWhiteSpace(noTs.Text));
+    }
+
+    /// <summary>The single presigned PUT, not the multipart flow used by default.</summary>
+    [SkippableFact]
+    public async Task SingleShotUploadPath()
+    {
+        Skip.If(Environment.GetEnvironmentVariable("SR_LIVE") != "1", "opt-in");
+        using var client = new SttClient(timeout: TimeSpan.FromMinutes(15), multipart: false);
+
+        var result = await client.TranscribeAsync(Audio());
+        Assert.False(string.IsNullOrWhiteSpace(result.Text),
+            "empty transcript from the single-shot upload path");
+    }
+
+    /// <summary>
+    /// A mock can hand back a shape these happen to survive; production is the
+    /// real input.
+    /// </summary>
+    [SkippableFact]
+    public async Task TranscriptTransformsOnARealResponse()
+    {
+        using var client = Client();
+        var result = await client.TranscribeAsync(Audio(),
+            new TranscribeOptions { SpeakerLabels = true });
+
+        var d = result.ToDict();
+        foreach (var k in new[] { "id", "text", "words", "utterances" })
+            Assert.True(d.ContainsKey(k), $"ToDict is missing {k}");
+
+        var dg = result.ToDeepgram();
+        Assert.True(dg.ContainsKey("results"),
+            $"ToDeepgram has no results key: {string.Join(",", dg.Keys)}");
+
+        var dir = Directory.CreateTempSubdirectory().FullName;
+        var written = await result.SaveAsync(Path.Combine(dir, "out"));
+        Assert.EndsWith(".json", written);
+        Assert.True(new FileInfo(written).Length > 0, "SaveAsync wrote an empty file");
+    }
 }
