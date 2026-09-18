@@ -112,6 +112,14 @@ public sealed class SttClient : IDisposable
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    /// <summary>
+    /// Sent on every request. HttpClient sends no User-Agent of its own, and the
+    /// edge rejects a request without one with a bare 403 — so without this the
+    /// SDK cannot reach production at all, while still passing every test that
+    /// points at a local mock.
+    /// </summary>
+    internal const string UserAgent = "speechrevolutions-csharp/0.2.0";
+
     private readonly string _apiKey;
     private readonly string _baseUrl;
     private readonly TimeSpan _timeout;
@@ -160,6 +168,12 @@ public sealed class SttClient : IDisposable
         _multipart = multipart;
         _maxRetries = Math.Max(0, maxRetries);
         _retryBackoff = retryBackoff ?? DefaultRetryBackoff;
+
+        // Covers the presigned upload and download calls too, which go out on the
+        // shared client rather than through ApiRequestAsync. Only set when the
+        // caller has not chosen their own, since a supplied HttpClient is theirs.
+        if (!_http.DefaultRequestHeaders.UserAgent.Any())
+            _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent);
     }
 
     // High-level
@@ -707,6 +721,7 @@ public sealed class SttClient : IDisposable
         {
             using var req = new HttpRequestMessage(method, $"{_baseUrl}{path}");
             req.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
+            req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
             if (json is not null)
                 req.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
@@ -884,6 +899,7 @@ public sealed class SttClient : IDisposable
 
         using var req = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/api/v1/jobs/{jobId}/stream");
         req.Headers.TryAddWithoutValidation("X-API-Key", _apiKey);
+        req.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         if (lastEventId is not null)
             req.Headers.TryAddWithoutValidation("Last-Event-ID", lastEventId);
