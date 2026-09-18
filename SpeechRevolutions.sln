@@ -1,8 +1,10 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SpeechRevolutions", "SpeechRevolutions\SpeechRevolutions.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Examples", "Examples\Examples.csproj", "{B2C3D4E5-F6A7-8901-BCDE-F12345678901}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SpeechRevolutions.Tests", "SpeechRevolutions.Tests\SpeechRevolutions.Tests.csproj", "{0E75B029-82B6-43B9-B0A0-9060EE189C48}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -18,5 +20,9 @@ Global
 		{B2C3D4E5-F6A7-8901-BCDE-F12345678901}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B2C3D4E5-F6A7-8901-BCDE-F12345678901}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B2C3D4E5-F6A7-8901-BCDE-F12345678901}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0E75B029-82B6-43B9-B0A0-9060EE189C48}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0E75B029-82B6-43B9-B0A0-9060EE189C48}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0E75B029-82B6-43B9-B0A0-9060EE189C48}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0E75B029-82B6-43B9-B0A0-9060EE189C48}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

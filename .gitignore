@@ -12,3 +12,7 @@
 ## Rider / VS Code
 .idea/
 *.DotSettings.user
+
+# build output
+bin/
+obj/
