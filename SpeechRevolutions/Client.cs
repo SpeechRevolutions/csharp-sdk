@@ -15,6 +15,19 @@ public sealed class SttClient : IDisposable
     private const int UploadMaxAttempts = 4;
     private static readonly TimeSpan UploadBaseDelay = TimeSpan.FromSeconds(1);
     private const int SseMaxReconnects = 10;
+
+    /// <summary>
+    /// How many times to retry a stream endpoint that answered with a NON-2xx
+    /// status, as opposed to one whose connection dropped.
+    /// <para>
+    /// The two look the same to the reconnect loop and are not the same thing.
+    /// A drop is transient. A non-2xx is a refusal: a proxy or load balancer
+    /// that does not pass text/event-stream answers every attempt identically,
+    /// forever, so the full ladder just burns 30s before falling back to
+    /// polling — on every job.
+    /// </para>
+    /// </summary>
+    private const int SseMaxStatusRefusals = 2;
     private static readonly TimeSpan SseReconnectDelay = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
@@ -45,6 +58,23 @@ public sealed class SttClient : IDisposable
         "/api/v1/upload/multipart/create",
     };
 
+    /// <summary>
+    /// Resolves the API host: an explicit value, then the environment, then
+    /// production.
+    /// <para>
+    /// Symmetric with the API key — if a caller can supply a key from the
+    /// environment, they can point it at an environment too. Needed for
+    /// staging, for an egress proxy or gateway, and for running any published
+    /// example against something that is not production.
+    /// </para>
+    /// </summary>
+    private static string ResolveBaseUrl(string? baseUrl)
+    {
+        baseUrl ??= Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_BASE_URL");
+        baseUrl ??= Environment.GetEnvironmentVariable("STT_BASE_URL");
+        return (string.IsNullOrWhiteSpace(baseUrl) ? DefaultBaseUrl : baseUrl).TrimEnd('/');
+    }
+
     private static bool CreatesJob(string path)
     {
         var clean = path.Split('?')[0].TrimEnd('/');
@@ -71,6 +101,14 @@ public sealed class SttClient : IDisposable
         }
         return false;
     }
+
+    /// <summary>
+    /// The API host this client will talk to, after resolving an explicit
+    /// value, then SPEECHREVOLUTIONS_BASE_URL / STT_BASE_URL, then production.
+    /// Exposed for parity with the Go and JavaScript clients, and so callers
+    /// can confirm which environment they are pointed at.
+    /// </summary>
+    public string BaseUrl { get; } = DefaultBaseUrl;
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -114,7 +152,8 @@ public sealed class SttClient : IDisposable
                 "apiKey is required (pass apiKey or set SPEECHREVOLUTIONS_API_KEY / STT_API_KEY)");
 
         _apiKey = apiKey;
-        _baseUrl = (baseUrl ?? DefaultBaseUrl).TrimEnd('/');
+        _baseUrl = ResolveBaseUrl(baseUrl);
+        BaseUrl = _baseUrl;
         _timeout = timeout ?? TimeSpan.FromSeconds(600);
         _ownsHttp = httpClient is null;
         _http = httpClient ?? new HttpClient();
@@ -796,6 +835,7 @@ public sealed class SttClient : IDisposable
         var start = DateTime.UtcNow;
         string? lastEventId = null;
         var reconnects = 0;
+        var refusals = 0;
 
         while (true)
         {
@@ -816,6 +856,13 @@ public sealed class SttClient : IDisposable
                     return downloadUrl ?? fallbackDownloadUrl;
                 case "timeout":
                     throw new JobTimeoutException($"Timed out after {timeout.TotalSeconds}s waiting for job {jobId}");
+                case "refused":
+                    refusals++;
+                    // The endpoint will not stream. Fall back to polling now
+                    // rather than burning the full reconnect ladder.
+                    if (refusals >= SseMaxStatusRefusals) return null;
+                    reconnects++;
+                    break;
                 case "reconnect":
                     reconnects++;
                     break;
@@ -859,7 +906,9 @@ public sealed class SttClient : IDisposable
         {
             if ((int)resp.StatusCode == 401) throw new AuthenticationException();
             if ((int)resp.StatusCode == 429) throw new RateLimitException();
-            if ((int)resp.StatusCode != 200) return ("reconnect", null, lastEventId);
+            // A status, not a dropped connection: the endpoint answered and said
+            // no. Budgeted separately — see SseMaxStatusRefusals.
+            if ((int)resp.StatusCode != 200) return ("refused", null, lastEventId);
 
             await using var stream = await resp.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
