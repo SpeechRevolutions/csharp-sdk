@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 
@@ -22,6 +23,54 @@ public sealed class SttClient : IDisposable
     private static readonly TimeSpan RetryBackoffMax = TimeSpan.FromSeconds(30);
     private static readonly int[] RetryStatusCodes = { 429, 500, 502, 503, 504 };
     private static readonly string[] RequestIdHeaders = { "x-request-id", "x-amzn-requestid", "cf-ray" };
+
+    /// <summary>
+    /// Endpoints that CREATE a job, and so are not safe to blindly retry.
+    /// <para>
+    /// A job is created the moment the server handles one of these; the response
+    /// carrying the job id back is what can be lost. Retrying after the request
+    /// may have arrived creates a SECOND job for the same audio - two
+    /// transcripts, two charges - and the caller never learns about the orphan.
+    /// The API has no idempotency key, so the only safe rule is to retry these
+    /// solely when the request provably never reached the server.
+    /// </para>
+    /// <para>
+    /// Every other endpoint either reads, or acts on a job id the caller already
+    /// holds, and stays fully retryable.
+    /// </para>
+    /// </summary>
+    private static readonly string[] JobCreatingPaths =
+    {
+        "/api/v1/upload",
+        "/api/v1/upload/multipart/create",
+    };
+
+    private static bool CreatesJob(string path)
+    {
+        var clean = path.Split('?')[0].TrimEnd('/');
+        return Array.IndexOf(JobCreatingPaths, clean) >= 0;
+    }
+
+    /// <summary>
+    /// True when the exception proves the request never got to the server, so
+    /// retrying it cannot duplicate work. Anything later (a reset mid-flight, a
+    /// response-read timeout) is ambiguous and must not be retried for a create.
+    /// </summary>
+    private static bool NeverReachedServer(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is SocketException se)
+            {
+                return se.SocketErrorCode is SocketError.ConnectionRefused
+                    or SocketError.HostNotFound
+                    or SocketError.HostUnreachable
+                    or SocketError.NetworkUnreachable
+                    or SocketError.TryAgain;
+            }
+        }
+        return false;
+    }
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -611,6 +660,9 @@ public sealed class SttClient : IDisposable
         CancellationToken cancellationToken)
     {
         var json = body is null ? null : JsonSerializer.Serialize(body);
+        // Job-creating calls retry only when the request provably never landed;
+        // anything else would risk a duplicate job and a duplicate charge.
+        var creating = CreatesJob(path);
 
         for (var attempt = 1; ; attempt++)
         {
@@ -630,7 +682,7 @@ public sealed class SttClient : IDisposable
             }
             catch (Exception ex)
             {
-                if (attempt <= _maxRetries)
+                if ((!creating || NeverReachedServer(ex)) && attempt <= _maxRetries)
                 {
                     await Task.Delay(RetryDelay(attempt, null), cancellationToken);
                     continue;
@@ -641,7 +693,11 @@ public sealed class SttClient : IDisposable
             using (resp)
             {
                 var status = (int)resp.StatusCode;
-                if (Array.IndexOf(RetryStatusCodes, status) >= 0 && attempt <= _maxRetries)
+                // For a create, only 429 is safe to retry: the server refused it
+                // outright, so no job exists. A 5xx may have created one first.
+                if (Array.IndexOf(RetryStatusCodes, status) >= 0
+                    && attempt <= _maxRetries
+                    && (!creating || status == 429))
                 {
                     await Task.Delay(RetryDelay(attempt, RetryAfterSeconds(resp)), cancellationToken);
                     continue;
