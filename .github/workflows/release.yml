@@ -6,7 +6,14 @@
 # The functional suite drives the API mock from the python-sdk repo — the shared
 # reference implementation — so CI checks it out and points SR_MOCK_API at it.
 #
-# Needs secrets.NUGET_API_KEY with push rights for the SpeechRevolutions package.
+# Uses NuGet Trusted Publishing: the workflow exchanges a GitHub OIDC token for a
+# short-lived API key at publish time, so there is no long-lived key stored
+# anywhere. Configure it once at nuget.org under API Keys -> Trusted Publishing
+# with owner SpeechRevolutions, repo csharp-sdk, workflow release.yml,
+# environment nuget.
+#
+# vars.NUGET_USER must hold the nuget.org username the trusted publisher policy
+# belongs to. It is not a secret, hence a variable rather than one.
 name: release
 
 on:
@@ -48,14 +55,21 @@ jobs:
     needs: [test, version-matches-tag]
     runs-on: ubuntu-latest
     environment: nuget
+    permissions:
+      id-token: write          # required to mint the OIDC token NuGet exchanges
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
       - run: dotnet pack SpeechRevolutions/SpeechRevolutions.csproj -c Release -o out
+      - uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
       - run: |
           dotnet nuget push "out/*.nupkg" \
-            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
