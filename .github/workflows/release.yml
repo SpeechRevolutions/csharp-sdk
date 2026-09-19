@@ -1,0 +1,61 @@
+# Publish to NuGet when a version tag is pushed.
+#
+# Tests gate the publish. A NuGet version can never be reused once pushed, even
+# after it is unlisted, so this is the only chance to get it right.
+#
+# The functional suite drives the API mock from the python-sdk repo — the shared
+# reference implementation — so CI checks it out and points SR_MOCK_API at it.
+#
+# Needs secrets.NUGET_API_KEY with push rights for the SpeechRevolutions package.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: SpeechRevolutions/python-sdk
+          path: _mock
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Category=Live talks to production and needs a key; not a release gate.
+      - run: dotnet test --filter "Category!=Live"
+        env:
+          SR_MOCK_API: ${{ github.workspace }}/_mock/tests/mock_api.py
+
+  version-matches-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag and the csproj must agree
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(grep -oPm1 '(?<=<Version>)[^<]+' SpeechRevolutions/SpeechRevolutions.csproj)
+          echo "tag=$TAG csproj=$PKG"
+          [ "$TAG" = "$PKG" ] || { echo "::error::tag $TAG != csproj $PKG"; exit 1; }
+
+  publish:
+    needs: [test, version-matches-tag]
+    runs-on: ubuntu-latest
+    environment: nuget
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet pack SpeechRevolutions/SpeechRevolutions.csproj -c Release -o out
+      - run: |
+          dotnet nuget push "out/*.nupkg" \
+            --api-key "${{ secrets.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
