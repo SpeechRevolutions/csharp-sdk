@@ -1,0 +1,33 @@
+# Tests on every push to main and every pull request.
+#
+# The release workflow runs the same suite, but only once a tag exists. That is
+# late for two reasons: a contributor opening a pull request against a public
+# repo gets no signal at all, and a break landed on main is only discovered by
+# whoever next cuts a release. Keeping main green means the commit being tagged
+# was already known good.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: SpeechRevolutions/python-sdk
+          path: _mock
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Category=Live talks to production and needs a key; not a gate.
+      - run: dotnet test --filter "Category!=Live"
+        env:
+          SR_MOCK_API: ${{ github.workspace }}/_mock/tests/mock_api.py
