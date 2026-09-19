@@ -45,10 +45,10 @@ public class RetryPolicyTests
     private static HttpResponseMessage Json(HttpStatusCode code, string body)
         => new(code) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
 
-    private static (SttClient, ScriptedHandler) Client(Func<int, HttpResponseMessage> respond)
+    private static (SpeechRevolutionsClient, ScriptedHandler) Client(Func<int, HttpResponseMessage> respond)
     {
         var handler = new ScriptedHandler(respond);
-        var client = new SttClient(
+        var client = new SpeechRevolutionsClient(
             apiKey: "k",
             baseUrl: "http://localhost:1",
             httpClient: new HttpClient(handler),
@@ -82,7 +82,7 @@ public class RetryPolicyTests
         // A reset after the connection was established is ambiguous.
         var handler = new ThrowingHandler(
             new HttpRequestException("reset", new SocketException((int)SocketError.ConnectionReset)));
-        var client = new SttClient(
+        var client = new SpeechRevolutionsClient(
             apiKey: "k", baseUrl: "http://localhost:1",
             httpClient: new HttpClient(handler), maxRetries: 3,
             retryBackoff: TimeSpan.FromMilliseconds(1));
@@ -118,7 +118,7 @@ public class RetryPolicyTests
     {
         var handler = new ThrowingHandler(
             new HttpRequestException("no connection", new SocketException((int)error)));
-        var client = new SttClient(
+        var client = new SpeechRevolutionsClient(
             apiKey: "k", baseUrl: "http://localhost:1",
             httpClient: new HttpClient(handler), maxRetries: 2,
             retryBackoff: TimeSpan.FromMilliseconds(1));
@@ -165,7 +165,7 @@ public class RetryPolicyTests
         var handler = new ThrowingHandler(
             new HttpRequestException("reset", new SocketException((int)SocketError.ConnectionReset)),
             succeedAfter: 1);
-        var client = new SttClient(
+        var client = new SpeechRevolutionsClient(
             apiKey: "k", baseUrl: "http://localhost:1",
             httpClient: new HttpClient(handler), maxRetries: 3,
             retryBackoff: TimeSpan.FromMilliseconds(1));

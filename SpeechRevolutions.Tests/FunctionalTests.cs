@@ -100,7 +100,7 @@ public class FunctionalTests
         }
     }
 
-    private static SttClient Client(string baseUrl) =>
+    private static SpeechRevolutionsClient Client(string baseUrl) =>
         new(apiKey: "test-key", baseUrl: baseUrl,
             retryBackoff: TimeSpan.FromMilliseconds(1));
 
@@ -116,10 +116,10 @@ public class FunctionalTests
         Environment.SetEnvironmentVariable("SPEECHREVOLUTIONS_BASE_URL", "https://staging.example/");
         try
         {
-            Assert.Equal("https://staging.example", new SttClient("k").BaseUrl);
+            Assert.Equal("https://staging.example", new SpeechRevolutionsClient("k").BaseUrl);
             // An explicit value still wins.
             Assert.Equal("https://explicit.example",
-                new SttClient("k", baseUrl: "https://explicit.example").BaseUrl);
+                new SpeechRevolutionsClient("k", baseUrl: "https://explicit.example").BaseUrl);
         }
         finally
         {
@@ -132,7 +132,7 @@ public class FunctionalTests
     {
         Environment.SetEnvironmentVariable("SPEECHREVOLUTIONS_BASE_URL", null);
         Environment.SetEnvironmentVariable("STT_BASE_URL", null);
-        Assert.Equal("https://api.speechrevolutions.com", new SttClient("k").BaseUrl);
+        Assert.Equal("https://api.speechrevolutions.com", new SpeechRevolutionsClient("k").BaseUrl);
     }
 
     // -----------------------------------------------------------------------
@@ -244,7 +244,7 @@ public class FunctionalTests
     public async Task BadApiKeyIsRejected()
     {
         using var mock = new Mock();
-        using var c = new SttClient(apiKey: "wrong-key", baseUrl: mock.Base,
+        using var c = new SpeechRevolutionsClient(apiKey: "wrong-key", baseUrl: mock.Base,
             retryBackoff: TimeSpan.FromMilliseconds(1));
         await Assert.ThrowsAsync<AuthenticationException>(() => c.ListJobsAsync(limit: 1));
     }

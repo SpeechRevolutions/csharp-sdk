@@ -30,7 +30,7 @@ namespace SpeechRevolutions.Tests;
 [Trait("Category", "Live")]
 public class LiveTests
 {
-    private static SttClient Client()
+    private static SpeechRevolutionsClient Client()
     {
         Skip.If(Environment.GetEnvironmentVariable("SR_LIVE") != "1",
             "live API tests are opt-in: set SR_LIVE=1 (creates real, billable jobs)");
@@ -39,7 +39,7 @@ public class LiveTests
             && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("STT_API_KEY")),
             "SPEECHREVOLUTIONS_API_KEY is not set");
 
-        return new SttClient(timeout: TimeSpan.FromMinutes(15));
+        return new SpeechRevolutionsClient(timeout: TimeSpan.FromMinutes(15));
     }
 
     /// <summary>The shortest clip available: these create real, billed jobs.</summary>
@@ -100,7 +100,7 @@ public class LiveTests
     public async Task ABadKeyIsRejected()
     {
         using var _gate = Client();
-        using var bogus = new SttClient(apiKey: "stt_definitely_not_a_real_key");
+        using var bogus = new SpeechRevolutionsClient(apiKey: "stt_definitely_not_a_real_key");
         await Assert.ThrowsAnyAsync<SttException>(() => bogus.ListJobsAsync(limit: 1));
     }
 
@@ -397,7 +397,7 @@ public class LiveTests
     public async Task SingleShotUploadPath()
     {
         Skip.If(Environment.GetEnvironmentVariable("SR_LIVE") != "1", "opt-in");
-        using var client = new SttClient(timeout: TimeSpan.FromMinutes(15), multipart: false);
+        using var client = new SpeechRevolutionsClient(timeout: TimeSpan.FromMinutes(15), multipart: false);
 
         var result = await client.TranscribeAsync(Audio());
         Assert.False(string.IsNullOrWhiteSpace(result.Text),

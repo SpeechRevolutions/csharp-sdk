@@ -27,7 +27,7 @@ static class Examples
     // --- transcribe: every option explicit, live bars, save to disk ---------
     public static async Task TranscribeAsync()
     {
-        using var client = new SttClient(); // reads SPEECHREVOLUTIONS_API_KEY / STT_API_KEY
+        using var client = new SpeechRevolutionsClient(); // reads SPEECHREVOLUTIONS_API_KEY / STT_API_KEY
 
         var options = new TranscribeOptions
         {
@@ -50,7 +50,7 @@ static class Examples
     // --- retrieve: list / get-by-id / fetch transcript ----------------------
     public static async Task RetrieveAsync()
     {
-        using var client = new SttClient();
+        using var client = new SpeechRevolutionsClient();
 
         // 1. Fire-and-forget: SubmitAsync returns a job id immediately, no waiting.
         var jobId = await client.SubmitAsync("audio.mp3");
@@ -84,7 +84,7 @@ static class Examples
     // --- progress: two callbacks -> one 0–100 number for your UI ------------
     public static async Task ProgressAsync()
     {
-        using var client = new SttClient();
+        using var client = new SpeechRevolutionsClient();
 
         // Weight the phases into a single bar (upload is usually quick).
         const double uploadWeight = 0.15, transcribeWeight = 0.85;

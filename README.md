@@ -20,7 +20,7 @@ Or reference the project directly:
 ```csharp
 using SpeechRevolutions;
 
-using var client = new SttClient(); // SPEECHREVOLUTIONS_API_KEY or STT_API_KEY
+using var client = new SpeechRevolutionsClient(); // SPEECHREVOLUTIONS_API_KEY or STT_API_KEY
 var result = await client.TranscribeAsync("meeting.mp3", new TranscribeOptions
 {
     SpeakerLabels = true, // or Diarize = true
@@ -165,7 +165,7 @@ with exponential backoff, honoring `Retry-After`. Uploads and the progress
 stream have their own retry loops.
 
 ```csharp
-var client = new SttClient(
+var client = new SpeechRevolutionsClient(
     timeout: TimeSpan.FromMinutes(10),      // whole-job wait (SSE + polling)
     maxRetries: 3,                          // extra attempts per API request
     retryBackoff: TimeSpan.FromMilliseconds(500),
@@ -183,7 +183,7 @@ export SPEECHREVOLUTIONS_API_KEY=stt_...
 export STT_API_KEY=stt_...
 ```
 
-Or pass it directly: `new SttClient(apiKey: "stt_...")`.
+Or pass it directly: `new SpeechRevolutionsClient(apiKey: "stt_...")`.
 
 ## Errors
 

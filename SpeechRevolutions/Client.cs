@@ -8,7 +8,7 @@ namespace SpeechRevolutions;
 /// <summary>
 /// Client for the Speech Revolutions speech-to-text API.
 /// </summary>
-public sealed class SttClient : IDisposable
+public sealed class SpeechRevolutionsClient : IDisposable
 {
     private const string DefaultBaseUrl = "https://api.speechrevolutions.com";
     private static readonly TimeSpan UploadProgressInterval = TimeSpan.FromSeconds(10);
@@ -144,7 +144,7 @@ public sealed class SttClient : IDisposable
     /// 429/5xx. Uploads and the progress stream have their own retry loops.
     /// </param>
     /// <param name="retryBackoff">First retry delay; doubles per attempt, capped at 30s.</param>
-    public SttClient(
+    public SpeechRevolutionsClient(
         string? apiKey = null,
         string? baseUrl = null,
         TimeSpan? timeout = null,
