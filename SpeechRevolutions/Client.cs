@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -118,7 +119,26 @@ public sealed class SpeechRevolutionsClient : IDisposable
     /// SDK cannot reach production at all, while still passing every test that
     /// points at a local mock.
     /// </summary>
-    internal const string UserAgent = "speechrevolutions-csharp/0.2.0";
+    /// <remarks>
+    /// Derived from the assembly rather than written out, so it cannot drift from
+    /// the shipped package version the way a literal does. InformationalVersion
+    /// carries any "+buildmetadata" suffix, which is trimmed.
+    /// </remarks>
+    internal static readonly string UserAgent = "speechrevolutions-csharp/" + PackageVersion();
+
+    private static string PackageVersion()
+    {
+        var asm = typeof(SpeechRevolutionsClient).Assembly;
+        var informational = asm
+            .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(informational))
+        {
+            var plus = informational.IndexOf('+');
+            return plus >= 0 ? informational.Substring(0, plus) : informational;
+        }
+        return asm.GetName().Version?.ToString(3) ?? "0.0.0";
+    }
 
     private readonly string _apiKey;
     private readonly string _baseUrl;

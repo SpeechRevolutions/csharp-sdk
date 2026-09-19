@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>SpeechRevolutions</RootNamespace>
     <AssemblyName>SpeechRevolutions</AssemblyName>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Description>Official C# SDK for the Speech Revolutions speech-to-text API</Description>
     <PackageId>SpeechRevolutions</PackageId>
     <Authors>Speech Revolutions</Authors>
