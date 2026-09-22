@@ -55,7 +55,7 @@ Pass a `TranscribeOptions`. `Diarize` is a Deepgram-compatible alias for
 | `SpeakerLabels` | `bool` | `true` | label who spoke each segment |
 | `Diarize` | `bool?` | `null` | alias for `SpeakerLabels` |
 | `Nltk` | `bool` | `true` | restore punctuation & capitalization |
-| `Tier` | `ProcessingTier` | `Standard` | `Standard \| Economy` |
+| `Tier` | `ProcessingTier` | `Standard` | `Standard` — the only tier currently available |
 | `CustomVocabulary` | `IReadOnlyList<string>?` | `null` | domain terms to bias toward |
 | `Progress` | `bool` | `false` | render live console bars (see below) |
 | `OnUploadProgress` | `Action<ProgressEvent>?` | `null` | upload-progress callback (see below) |
