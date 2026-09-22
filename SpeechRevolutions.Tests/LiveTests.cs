@@ -35,8 +35,7 @@ public class LiveTests
         Skip.If(Environment.GetEnvironmentVariable("SR_LIVE") != "1",
             "live API tests are opt-in: set SR_LIVE=1 (creates real, billable jobs)");
         Skip.If(
-            string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_API_KEY"))
-            && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("STT_API_KEY")),
+            string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_API_KEY")),
             "SPEECHREVOLUTIONS_API_KEY is not set");
 
         return new SpeechRevolutionsClient(timeout: TimeSpan.FromMinutes(15));
@@ -101,7 +100,7 @@ public class LiveTests
     {
         using var _gate = Client();
         using var bogus = new SpeechRevolutionsClient(apiKey: "stt_definitely_not_a_real_key");
-        await Assert.ThrowsAnyAsync<SttException>(() => bogus.ListJobsAsync(limit: 1));
+        await Assert.ThrowsAnyAsync<SpeechRevolutionsException>(() => bogus.ListJobsAsync(limit: 1));
     }
 
     // -----------------------------------------------------------------------

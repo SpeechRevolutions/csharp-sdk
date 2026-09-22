@@ -2,7 +2,7 @@
 //   dotnet run                # transcribe (default) — options + live progress bars, saves the file
 //   dotnet run -- retrieve    # submit() without waiting, then poll/get a job by id + list
 //   dotnet run -- progress    # live progress as one 0–100 number (web-app pattern)
-// The API key is read from SPEECHREVOLUTIONS_API_KEY or STT_API_KEY.
+// The API key is read from SPEECHREVOLUTIONS_API_KEY.
 
 using SpeechRevolutions;
 
@@ -27,7 +27,7 @@ static class Examples
     // --- transcribe: every option explicit, live bars, save to disk ---------
     public static async Task TranscribeAsync()
     {
-        using var client = new SpeechRevolutionsClient(); // reads SPEECHREVOLUTIONS_API_KEY / STT_API_KEY
+        using var client = new SpeechRevolutionsClient(); // reads SPEECHREVOLUTIONS_API_KEY
 
         var options = new TranscribeOptions
         {

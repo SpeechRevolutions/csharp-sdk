@@ -20,7 +20,7 @@ Or reference the project directly:
 ```csharp
 using SpeechRevolutions;
 
-using var client = new SpeechRevolutionsClient(); // SPEECHREVOLUTIONS_API_KEY or STT_API_KEY
+using var client = new SpeechRevolutionsClient(); // reads SPEECHREVOLUTIONS_API_KEY
 var result = await client.TranscribeAsync("meeting.mp3", new TranscribeOptions
 {
     SpeakerLabels = true, // or Diarize = true
@@ -179,15 +179,13 @@ them; `RateLimitException.RetryAfter` holds the server's hint in seconds.
 
 ```bash
 export SPEECHREVOLUTIONS_API_KEY=stt_...
-# or
-export STT_API_KEY=stt_...
 ```
 
 Or pass it directly: `new SpeechRevolutionsClient(apiKey: "stt_...")`.
 
 ## Errors
 
-All errors derive from `SttException`: `AuthenticationException`,
+All errors derive from `SpeechRevolutionsException`: `AuthenticationException`,
 `RateLimitException`, `JobNotFoundException`, `JobFailedException`
 (`Step` / `Reason`), `UploadException`, `JobTimeoutException`, and `ApiException`
 (`StatusCode` / `Body`).

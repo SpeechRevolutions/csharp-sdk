@@ -72,7 +72,6 @@ public sealed class SpeechRevolutionsClient : IDisposable
     private static string ResolveBaseUrl(string? baseUrl)
     {
         baseUrl ??= Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_BASE_URL");
-        baseUrl ??= Environment.GetEnvironmentVariable("STT_BASE_URL");
         return (string.IsNullOrWhiteSpace(baseUrl) ? DefaultBaseUrl : baseUrl).TrimEnd('/');
     }
 
@@ -105,7 +104,7 @@ public sealed class SpeechRevolutionsClient : IDisposable
 
     /// <summary>
     /// The API host this client will talk to, after resolving an explicit
-    /// value, then SPEECHREVOLUTIONS_BASE_URL / STT_BASE_URL, then production.
+    /// value, then SPEECHREVOLUTIONS_BASE_URL, then production.
     /// Exposed for parity with the Go and JavaScript clients, and so callers
     /// can confirm which environment they are pointed at.
     /// </summary>
@@ -173,11 +172,10 @@ public sealed class SpeechRevolutionsClient : IDisposable
         int maxRetries = DefaultMaxRetries,
         TimeSpan? retryBackoff = null)
     {
-        apiKey ??= Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_API_KEY")
-                   ?? Environment.GetEnvironmentVariable("STT_API_KEY");
+        apiKey ??= Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_API_KEY");
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new AuthenticationException(
-                "apiKey is required (pass apiKey or set SPEECHREVOLUTIONS_API_KEY / STT_API_KEY)");
+                "apiKey is required (pass apiKey or set SPEECHREVOLUTIONS_API_KEY)");
 
         _apiKey = apiKey;
         _baseUrl = ResolveBaseUrl(baseUrl);
@@ -1056,7 +1054,7 @@ public sealed class SpeechRevolutionsClient : IDisposable
             }
             catch (AuthenticationException) { throw; }
             catch (JobFailedException) { throw; }
-            catch (SttException) { /* ignore transient */ }
+            catch (SpeechRevolutionsException) { /* ignore transient */ }
 
             try
             {

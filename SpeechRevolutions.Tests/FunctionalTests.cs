@@ -131,8 +131,24 @@ public class FunctionalTests
     public void BaseUrlDefaultsToProduction()
     {
         Environment.SetEnvironmentVariable("SPEECHREVOLUTIONS_BASE_URL", null);
-        Environment.SetEnvironmentVariable("STT_BASE_URL", null);
         Assert.Equal("https://api.speechrevolutions.com", new SpeechRevolutionsClient("k").BaseUrl);
+    }
+
+    // STT_BASE_URL predates the rebrand. Honouring it would let a stale variable
+    // silently point the client at the wrong host.
+    [Fact]
+    public void PreRebrandBaseUrlVariableIsIgnored()
+    {
+        Environment.SetEnvironmentVariable("SPEECHREVOLUTIONS_BASE_URL", null);
+        Environment.SetEnvironmentVariable("STT_BASE_URL", "https://stale.example");
+        try
+        {
+            Assert.Equal("https://api.speechrevolutions.com", new SpeechRevolutionsClient("k").BaseUrl);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("STT_BASE_URL", null);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -258,7 +274,7 @@ public class FunctionalTests
     {
         using var mock = new Mock("--fail-at", "gpu_timestamps");
         using var c = Client(mock.Base);
-        var ex = await Assert.ThrowsAnyAsync<SttException>(
+        var ex = await Assert.ThrowsAnyAsync<SpeechRevolutionsException>(
             () => c.TranscribeAsync(Audio()));
         Assert.Contains("gpu_timestamps", ex.ToString());
     }

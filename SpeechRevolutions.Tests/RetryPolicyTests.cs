@@ -71,7 +71,7 @@ public class RetryPolicyTests
         // A 5xx means the server saw the request. It may have created the job
         // before failing, so retrying risks a duplicate.
         var (client, handler) = Client(_ => Json(code, """{"detail":"boom"}"""));
-        await Assert.ThrowsAnyAsync<SttException>(
+        await Assert.ThrowsAnyAsync<SpeechRevolutionsException>(
             () => client.CreateUploadJobAsync(1024));
         Assert.Equal(1, handler.Calls);
     }
@@ -87,7 +87,7 @@ public class RetryPolicyTests
             httpClient: new HttpClient(handler), maxRetries: 3,
             retryBackoff: TimeSpan.FromMilliseconds(1));
 
-        await Assert.ThrowsAnyAsync<SttException>(() => client.CreateUploadJobAsync(1024));
+        await Assert.ThrowsAnyAsync<SpeechRevolutionsException>(() => client.CreateUploadJobAsync(1024));
         Assert.Equal(1, handler.Calls);
     }
 
@@ -123,7 +123,7 @@ public class RetryPolicyTests
             httpClient: new HttpClient(handler), maxRetries: 2,
             retryBackoff: TimeSpan.FromMilliseconds(1));
 
-        await Assert.ThrowsAnyAsync<SttException>(() => client.CreateUploadJobAsync(1024));
+        await Assert.ThrowsAnyAsync<SpeechRevolutionsException>(() => client.CreateUploadJobAsync(1024));
         Assert.Equal(3, handler.Calls); // 1 initial + 2 retries
     }
 
@@ -186,7 +186,7 @@ public class RetryPolicyTests
         // second job.
         var (client, handler) = Client(_ => Json(HttpStatusCode.BadGateway, """{"detail":"bad gateway"}"""));
 
-        var ex = await Assert.ThrowsAnyAsync<SttException>(() => client.CreateUploadJobAsync(1024));
+        var ex = await Assert.ThrowsAnyAsync<SpeechRevolutionsException>(() => client.CreateUploadJobAsync(1024));
         Assert.Equal(1, handler.Calls);
         Assert.Equal("/api/v1/upload", handler.Paths[0]);
     }
