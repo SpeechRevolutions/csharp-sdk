@@ -333,16 +333,23 @@ public sealed class TranscriptResult
     }
 
     /// <summary>
-    /// Prefers the server's diarization segments, which separate turns the
-    /// speaker labels alone cannot (the same speaker talking twice). Falls back
-    /// to grouping consecutive words by speaker.
+    /// Speaker turns. Built from the words whenever every word carries a speaker:
+    /// each word lands in exactly one utterance, and consecutive words from one
+    /// speaker are one turn. Built from the diarization segments instead, words
+    /// that fell between segments were silently dropped and every pause split a
+    /// turn in two. Segments are only the fallback, for words without speaker
+    /// labels — sorted, because the service has returned them grouped by speaker.
     /// </summary>
     private static List<Utterance> BuildUtterances(List<Word> words, System.Text.Json.JsonElement diarization)
     {
         if (diarization.ValueKind != System.Text.Json.JsonValueKind.Array) return BuildUtterances(words);
+        if (words.Count > 0 && words.All(w => !string.IsNullOrEmpty(w.Speaker))) return BuildUtterances(words);
 
+        var ordered = diarization.EnumerateArray()
+            .OrderBy(el => el.TryGetProperty("start", out var st) && st.TryGetDouble(out var v) ? v : 0.0)
+            .ToList();
         var segments = new List<Utterance>();
-        foreach (var el in diarization.EnumerateArray())
+        foreach (var el in ordered)
         {
             if (!el.TryGetProperty("start", out var s) || !s.TryGetDouble(out var start)) continue;
             if (!el.TryGetProperty("end", out var e) || !e.TryGetDouble(out var end)) continue;
