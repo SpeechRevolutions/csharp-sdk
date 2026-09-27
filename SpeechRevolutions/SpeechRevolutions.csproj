@@ -11,7 +11,7 @@
     <Authors>Speech Revolutions</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>speech-to-text;stt;transcription;whisper;asr</PackageTags>
-    <PackageProjectUrl>https://speechrevolutions.com</PackageProjectUrl>
+    <PackageProjectUrl>https://www.speechrevolutions.com</PackageProjectUrl>
     <RepositoryUrl>https://github.com/SpeechRevolutions/csharp-sdk</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>

@@ -1,6 +1,6 @@
 # Speech Revolutions — C# SDK
 
-Official C# client for the Speech Revolutions STT API. Async-first (`net8.0`),
+Official C# client for the [Speech Revolutions](https://www.speechrevolutions.com) speech-to-text API. Async-first (`net8.0`),
 in the style of the Deepgram / ElevenLabs .NET clients.
 
 ## Install
@@ -190,3 +190,8 @@ All errors derive from `SpeechRevolutionsException`: `AuthenticationException`,
 (`Step` / `Reason`), `UploadException`, `JobTimeoutException`, and `ApiException`
 (`StatusCode` / `Body`).
 ```
+
+## Links
+
+- [Speech Revolutions](https://www.speechrevolutions.com) — the speech-to-text API this library talks to
+- [Documentation](https://docs.speechrevolutions.com) — API reference, guides and quickstarts
