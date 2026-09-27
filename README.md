@@ -131,6 +131,13 @@ if (st.IsCompleted)
 var page = await client.ListJobsAsync(limit: 50);    // page.Jobs, page.NextBefore
 ```
 
+The signature is HMAC-SHA256 over the raw request body, keyed with **your account's own
+webhook signing secret** — find it under API Keys in the
+[console](https://console.speechrevolutions.com). Compare it with a constant-time function,
+and verify against the bytes you received rather than a re-serialised copy. Worked receivers
+for Python, Node, Go and C# are in the
+[webhooks guide](https://docs.speechrevolutions.com/guides/webhooks).
+
 ## Result shape
 
 Default `OutputType` is `Json`, which the SDK parses into a transcript-first
