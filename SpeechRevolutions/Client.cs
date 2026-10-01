@@ -381,6 +381,8 @@ public sealed class SpeechRevolutionsClient : IDisposable
             payload["file_size"] = fileSize.Value;
         if (options.CustomVocabulary is { Count: > 0 })
             payload["custom_vocabulary"] = options.CustomVocabulary;
+        if (options.Language is not null)
+            payload["language"] = options.Language;
         if (!string.IsNullOrEmpty(options.CallbackUrl))
             payload["callback_url"] = options.CallbackUrl;
         return payload;

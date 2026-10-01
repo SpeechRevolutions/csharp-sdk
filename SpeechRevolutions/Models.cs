@@ -53,6 +53,16 @@ public sealed class TranscribeOptions
     public IReadOnlyList<string>? CustomVocabulary { get; set; }
 
     /// <summary>
+    /// Optional ISO 639-1 language code from Whisper's set (e.g. <c>"en"</c>, <c>"ru"</c>).
+    /// <c>null</c> (the default) or <c>"auto"</c> means automatic language detection.
+    /// When set, detection is skipped and the whole job is transcribed in that language;
+    /// pinning the wrong language makes the model translate into it (Russian audio pinned
+    /// to <c>"en"</c> comes back as an English translation). An unsupported code is
+    /// rejected by the server with HTTP 422. Sent as <c>language</c>; omitted when <c>null</c>.
+    /// </summary>
+    public string? Language { get; set; }
+
+    /// <summary>
     /// Optional http(s) webhook POSTed a signed completion/failure notification
     /// (<c>X-SR-Signature: sha256=...</c>).
     /// </summary>

@@ -57,6 +57,7 @@ Pass a `TranscribeOptions`. `Diarize` is a Deepgram-compatible alias for
 | `Nltk` | `bool` | `true` | restore punctuation & capitalization |
 | `Tier` | `ProcessingTier` | `Standard` | `Standard` — the only tier currently available |
 | `CustomVocabulary` | `IReadOnlyList<string>?` | `null` | domain terms to bias toward |
+| `Language` | `string?` | `null` | ISO 639-1 code (e.g. `"en"`, `"ru"`); `null` = auto-detect |
 | `Progress` | `bool` | `false` | render live console bars (see below) |
 | `OnUploadProgress` | `Action<ProgressEvent>?` | `null` | upload-progress callback (see below) |
 
@@ -65,8 +66,14 @@ var result = await client.TranscribeAsync("a.mp3", new TranscribeOptions
 {
     OutputType = OutputType.Srt,
     CustomVocabulary = new[] { "Kubernetes", "Anthropic" },
+    Language = "en",
 });
 ```
+
+`Language` skips automatic language detection and transcribes the whole file in
+that language. Pinning the wrong language makes the model translate into it
+(Russian audio pinned to `"en"` comes back as an English translation), so leave
+it `null` unless you know the language; an unsupported code returns HTTP 422.
 
 ## Live progress
 

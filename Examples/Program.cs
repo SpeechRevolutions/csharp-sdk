@@ -37,6 +37,7 @@ static class Examples
             Nltk = true,                    // restore punctuation & capitalization
             Tier = ProcessingTier.Standard, // standard | economy
             CustomVocabulary = null,        // domain terms to bias toward, or null
+            Language = null,                // ISO 639-1 code (e.g. "en"), or null to auto-detect
             CallbackUrl = null,             // webhook URL for completion/failure, or null
             OnUploadProgress = null,        // Action<ProgressEvent> for upload %, or null
             Progress = true,                // render live upload + transcription bars (stderr)
