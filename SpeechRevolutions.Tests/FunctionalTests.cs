@@ -280,6 +280,40 @@ public class FunctionalTests
     }
 
     [SkippableFact]
+    public async Task ProgressFiresAndIsNotDoubledAt100()
+    {
+        using var mock = new Mock();
+        using var c = Client(mock.Base);
+
+        var seen = new List<ProgressEvent>();
+        await c.TranscribeAsync(Audio(), onProgress: e => seen.Add(e));
+
+        // The mock streams 1/2 then 2/2; the stream already reached 100%, so no extra event.
+        Assert.Equal(new int?[] { 1, 2 }, seen.Select(e => e.Completed).ToArray());
+        Assert.All(seen, e => Assert.Equal(2, e.Total));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProgressEndsAt100WhenTheServiceSendsNone(bool polling)
+    {
+        // A short file goes straight to one GPU chunk and streams no progress;
+        // the caller still gets exactly one closing 100% event.
+        using var mock = polling
+            ? new Mock("--progress-steps", "0", "--stream-status", "503")
+            : new Mock("--progress-steps", "0");
+        using var c = Client(mock.Base);
+
+        var seen = new List<ProgressEvent>();
+        await c.TranscribeAsync(Audio(), onProgress: e => seen.Add(e));
+
+        var only = Assert.Single(seen);
+        Assert.Equal(100.0, only.Percent);
+        Assert.Equal("completed", only.Step);
+    }
+
+    [SkippableFact]
     public async Task ARefusedStreamFallsBackToPollingQuickly()
     {
         // A proxy that will not pass text/event-stream answers 503 forever. The

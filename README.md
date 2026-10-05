@@ -31,12 +31,17 @@ foreach (var u in result.Utterances)
     Console.WriteLine($"Speaker {u.Speaker}: {u.Text}");
 ```
 
+That is a complete `Program.cs` for `dotnet new console`. The snippets below
+continue it: each one needs only `client` and `using SpeechRevolutions;`.
+
 ### From a URL (Deepgram-style)
 
 ```csharp
-var result = await client.TranscribeUrlAsync("https://example.com/audio.mp3");
+var audioUrl = "https://docs.speechrevolutions.com/samples/diamond-necklace.mp3";
+var fromUrl = await client.TranscribeUrlAsync(audioUrl);
 // or just pass the URL to TranscribeAsync — http(s):// paths are detected:
-var same = await client.TranscribeAsync("https://example.com/audio.mp3");
+var same = await client.TranscribeAsync(audioUrl);
+Console.WriteLine(fromUrl.Text == same.Text ? fromUrl.Text : $"{fromUrl.Text}\n{same.Text}");
 ```
 
 The platform fetches the URL itself — the audio never passes through your
@@ -62,12 +67,13 @@ Pass a `TranscribeOptions`. `Diarize` is a Deepgram-compatible alias for
 | `OnUploadProgress` | `Action<ProgressEvent>?` | `null` | upload-progress callback (see below) |
 
 ```csharp
-var result = await client.TranscribeAsync("a.mp3", new TranscribeOptions
+var captions = await client.TranscribeAsync("meeting.mp3", new TranscribeOptions
 {
     OutputType = OutputType.Srt,
     CustomVocabulary = new[] { "Kubernetes", "Anthropic" },
     Language = "en",
 });
+Console.WriteLine(captions.Text); // the SRT document
 ```
 
 `Language` skips automatic language detection and transcribes the whole file in
@@ -89,10 +95,11 @@ Set `Progress = true`. An `Uploading` byte bar renders first, then a
 `stderr` (so they never pollute piped `stdout`).
 
 ```csharp
-var result = await client.TranscribeAsync("meeting.mp3", new TranscribeOptions
+var withBars = await client.TranscribeAsync("meeting.mp3", new TranscribeOptions
 {
     Progress = true,
 });
+Console.WriteLine($"{withBars.Text.Length} characters");
 ```
 
 ```
@@ -106,19 +113,22 @@ Read `event.Percent` (a clamped `double?` in 0–100, `null` until it can be
 computed) to drive your own UI or API.
 
 ```csharp
-var result = await client.TranscribeAsync(
+var tracked = await client.TranscribeAsync(
     "meeting.mp3",
     new TranscribeOptions
     {
         // upload progress — Step == "upload"
         OnUploadProgress = e => Console.WriteLine($"upload {e.Percent:0}%"),
     },
-    // transcription progress
+    // transcription progress, e.g. 50% chunk:0, then 100% completed
     onProgress: e => Console.WriteLine($"{e.Percent:0}% {e.Step}"));
+Console.WriteLine(tracked.Text);
 ```
 
 Each `ProgressEvent` carries `Completed`, `Total`, `Step`, `ElapsedSeconds`, and
-the computed `Percent`.
+the computed `Percent`. A successful transcription always ends with a 100% event
+(`Step == "completed"`), even for a short file the service finishes without
+streaming any progress.
 
 ## Webhooks & retrieving results later
 
@@ -128,21 +138,56 @@ ideal for batch/background work. Collect the result later via a webhook
 body) or by polling (`dotnet run -- retrieve`):
 
 ```csharp
-var jobId = await client.SubmitAsync("meeting.mp3");   // returns immediately, no waiting
-// ...or notify a webhook instead of polling:
-await client.TranscribeAsync(path, new TranscribeOptions { CallbackUrl = "https://you.example.com/hook" });
+var jobId = await client.SubmitAsync("meeting.mp3"); // returns immediately, no waiting
+// ...or have the finished job POSTed to your webhook instead of polling:
+// var jobId = await client.SubmitAsync("meeting.mp3",
+//     new TranscribeOptions { CallbackUrl = "https://you.example.com/hook" });
 
-var st = await client.GetJobStatusAsync(jobId);      // st.Status: processing|completed|failed
+var st = await client.GetJobStatusAsync(jobId); // st.Status: processing|completed|failed
 if (st.IsCompleted)
-    result = await client.GetTranscriptAsync(jobId); // downloads + parses
-var page = await client.ListJobsAsync(limit: 50);    // page.Jobs, page.NextBefore
+{
+    var later = await client.GetTranscriptAsync(jobId); // downloads + parses
+    Console.WriteLine(later.Text);
+}
+var page = await client.ListJobsAsync(limit: 50); // page.Jobs, page.NextBefore
+Console.WriteLine($"{page.Jobs.Count} recent jobs");
 ```
 
 The signature is HMAC-SHA256 over the raw request body, keyed with **your account's own
 webhook signing secret** — find it under API Keys in the
-[console](https://console.speechrevolutions.com). Compare it with a constant-time function,
-and verify against the bytes you received rather than a re-serialised copy. Worked receivers
-for Python, Node, Go and C# are in the
+[console](https://console.speechrevolutions.com) and put it in
+`SPEECHREVOLUTIONS_WEBHOOK_SECRET`. Compare it with a constant-time function, and verify
+against the bytes you received rather than a re-serialised copy. A complete receiver
+(`Program.cs` of a `dotnet new web` project):
+
+```csharp
+using System.Security.Cryptography;
+using System.Text;
+
+var app = WebApplication.CreateBuilder(args).Build();
+var secret = Encoding.UTF8.GetBytes(
+    Environment.GetEnvironmentVariable("SPEECHREVOLUTIONS_WEBHOOK_SECRET")!);
+
+app.MapPost("/webhooks/stt", async (HttpRequest request) =>
+{
+    using var ms = new MemoryStream();
+    await request.Body.CopyToAsync(ms); // the exact bytes received
+    var raw = ms.ToArray();
+
+    var expected = "sha256=" + Convert.ToHexString(HMACSHA256.HashData(secret, raw)).ToLowerInvariant();
+    if (!CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(request.Headers["X-SR-Signature"].ToString())))
+        return Results.Unauthorized();
+
+    Console.WriteLine(Encoding.UTF8.GetString(raw)); // {"job_id": ..., "status": "completed", "download_url": ...}
+    return Results.Ok();
+});
+
+app.Run();
+```
+
+Worked receivers for Python, Node, Go and C# are in the
 [webhooks guide](https://docs.speechrevolutions.com/guides/webhooks).
 
 ## Result shape
@@ -156,7 +201,7 @@ Default `OutputType` is `Json`, which the SDK parses into a transcript-first
 | `result.Transcript` | Deepgram-style alias |
 | `result.Words` | word + `Start` / `End` / `Speaker` |
 | `result.Utterances` | AssemblyAI-style speaker turns |
-| `result.ToDeepgram()` | Deepgram-shaped dictionary |
+| `result.ToDeepgram()` | Deepgram-shaped dictionary (0-based integer speakers) |
 | `result.ToDict()` | normalized dictionary |
 | `result.Content` | raw response bytes |
 | `await result.SaveAsync(path)` | write to disk |
@@ -167,6 +212,7 @@ own.
 
 ```csharp
 var outPath = await result.SaveAsync("output"); // -> output.json
+Console.WriteLine($"saved to {outPath}");
 ```
 
 ## Timeouts and retries
@@ -179,11 +225,15 @@ with exponential backoff, honoring `Retry-After`. Uploads and the progress
 stream have their own retry loops.
 
 ```csharp
-var client = new SpeechRevolutionsClient(
+using var tuned = new SpeechRevolutionsClient(
     timeout: TimeSpan.FromMinutes(10),      // whole-job wait (SSE + polling)
     maxRetries: 3,                          // extra attempts per API request
     retryBackoff: TimeSpan.FromMilliseconds(500),
-    httpClient: myHttpClient);               // proxies, handlers, tracing
+    httpClient: new HttpClient());          // yours: proxies, handlers, tracing
+
+using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+var bounded = await tuned.TranscribeAsync("meeting.mp3", cancellationToken: cts.Token);
+Console.WriteLine(bounded.Text);
 ```
 
 Errors carry `StatusCode`, `RequestId` and `Body` where the server supplied
@@ -203,7 +253,6 @@ All errors derive from `SpeechRevolutionsException`: `AuthenticationException`,
 `RateLimitException`, `JobNotFoundException`, `JobFailedException`
 (`Step` / `Reason`), `UploadException`, `JobTimeoutException`, and `ApiException`
 (`StatusCode` / `Body`).
-```
 
 ## Links
 

@@ -1,6 +1,6 @@
 // Examples for the Speech Revolutions C# SDK. Pick one with the first arg:
 //   dotnet run                # transcribe (default) — options + live progress bars, saves the file
-//   dotnet run -- retrieve    # submit() without waiting, then poll/get a job by id + list
+//   dotnet run -- retrieve    # SubmitAsync() without waiting, then poll/get a job by id + list
 //   dotnet run -- progress    # live progress as one 0–100 number (web-app pattern)
 // The API key is read from SPEECHREVOLUTIONS_API_KEY.
 
@@ -35,7 +35,7 @@ static class Examples
             WordTimestamps = true,          // per-word start/end times
             SpeakerLabels = true,           // who spoke each segment (alias: Diarize)
             Nltk = true,                    // restore punctuation & capitalization
-            Tier = ProcessingTier.Standard, // standard | economy
+            Tier = ProcessingTier.Standard, // the only tier available today
             CustomVocabulary = null,        // domain terms to bias toward, or null
             Language = null,                // ISO 639-1 code (e.g. "en"), or null to auto-detect
             CallbackUrl = null,             // webhook URL for completion/failure, or null

@@ -26,9 +26,11 @@ public static class OutputTypeExtensions
     };
 }
 
+/// <summary>Pricing / scheduling tier. <see cref="Standard"/> is the only one available today, and the default.</summary>
 public enum ProcessingTier
 {
     Standard,
+    /// <summary>Reserved for a future tier; today it is processed as <see cref="Standard"/>.</summary>
     Economy,
 }
 
@@ -224,19 +226,26 @@ public sealed class TranscriptResult
     }
 
     /// <summary>The result reshaped as a Deepgram pre-recorded response.</summary>
+    /// <summary>
+    /// A rough Deepgram pre-recorded response shape. Speakers are 0-based
+    /// integers, as Deepgram numbers them (<c>SPEAKER_1</c> becomes <c>0</c>), on
+    /// words and on utterances alike.
+    /// </summary>
     public Dictionary<string, object?> ToDeepgram()
     {
-        var dgWords = Words.Select(w =>
+        var dgWords = Words.Select(DeepgramWord).ToList();
+        var utterances = Utterances.Select(u =>
         {
-            var item = new Dictionary<string, object?>
+            var utt = new Dictionary<string, object?>
             {
-                ["word"] = w.Text.ToLowerInvariant().TrimEnd('.', ',', '!', '?', ';', ':'),
-                ["punctuated_word"] = w.Text,
+                ["transcript"] = u.Text,
+                ["channel"] = 0,
+                ["words"] = u.Words.Select(DeepgramWord).ToList(),
             };
-            if (w.Start is not null) item["start"] = w.Start;
-            if (w.End is not null) item["end"] = w.End;
-            if (w.Speaker is not null) item["speaker"] = w.Speaker;
-            return item;
+            if (u.Start is not null) utt["start"] = u.Start;
+            if (u.End is not null) utt["end"] = u.End;
+            if (u.Speaker is not null) utt["speaker"] = DeepgramSpeaker(u.Speaker);
+            return utt;
         }).ToList();
 
         return new Dictionary<string, object?>
@@ -259,9 +268,34 @@ public sealed class TranscriptResult
                         },
                     },
                 },
-                ["utterances"] = Utterances,
+                ["utterances"] = utterances,
             },
         };
+    }
+
+    private static Dictionary<string, object?> DeepgramWord(Word w)
+    {
+        var item = new Dictionary<string, object?>
+        {
+            ["word"] = w.Text.ToLowerInvariant().TrimEnd('.', ',', '!', '?', ';', ':'),
+            ["punctuated_word"] = w.Text,
+        };
+        if (w.Start is not null) item["start"] = w.Start;
+        if (w.End is not null) item["end"] = w.End;
+        if (w.Speaker is not null) item["speaker"] = DeepgramSpeaker(w.Speaker);
+        return item;
+    }
+
+    /// <summary>Our 1-based <c>SPEAKER_n</c> label as Deepgram's 0-based integer; anything else unchanged.</summary>
+    private static object DeepgramSpeaker(string label)
+    {
+        const string prefix = "SPEAKER_";
+        if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(label.AsSpan(prefix.Length), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var n)
+            && n >= 1)
+            return n - 1;
+        return label;
     }
 
     public static TranscriptResult FromContent(string jobId, byte[] content, string outputType, string downloadUrl)

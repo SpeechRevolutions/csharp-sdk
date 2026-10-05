@@ -584,21 +584,47 @@ public sealed class SpeechRevolutionsClient : IDisposable
 
     // Progress / result
 
+    /// <summary>
+    /// Waits via SSE (with polling fallback) and downloads the result. When
+    /// <paramref name="onProgress"/> is set, a job that succeeds always ends with
+    /// a 100% event (<c>Step == "completed"</c>), even when the service sent no
+    /// progress at all — a short file goes straight to one GPU chunk and streams none.
+    /// </summary>
     public async Task<(byte[] Content, string DownloadUrl)> WaitForResultAsync(
         string jobId,
         string downloadUrl,
         Action<ProgressEvent>? onProgress = null,
         CancellationToken cancellationToken = default)
     {
-        var sseUrl = await WaitSseAsync(jobId, downloadUrl, onProgress, _timeout, cancellationToken);
-        if (sseUrl is null)
-        {
-            var content = await WaitPollAsync(jobId, downloadUrl, _timeout, cancellationToken);
-            return (content, downloadUrl);
-        }
+        var started = DateTime.UtcNow;
+        ProgressEvent? last = null;
+        Action<ProgressEvent>? tracked = onProgress is null
+            ? null
+            : e =>
+            {
+                last = e;
+                onProgress(e);
+            };
 
-        var bytes = await DownloadResultAsync(sseUrl, cancellationToken);
-        return (bytes, sseUrl);
+        var sseUrl = await WaitSseAsync(jobId, downloadUrl, tracked, _timeout, cancellationToken);
+        (byte[] Content, string DownloadUrl) result;
+        if (sseUrl is null)
+            result = (await WaitPollAsync(jobId, downloadUrl, _timeout, cancellationToken), downloadUrl);
+        else
+            result = (await DownloadResultAsync(sseUrl, cancellationToken), sseUrl);
+
+        if (onProgress is not null && !(last?.Percent >= 100.0))
+        {
+            var total = last?.Total is > 0 ? last.Total.Value : 1;
+            onProgress(new ProgressEvent
+            {
+                Completed = total,
+                Total = total,
+                Step = "completed",
+                ElapsedSeconds = (DateTime.UtcNow - started).TotalSeconds,
+            });
+        }
+        return result;
     }
 
     public async Task<byte[]> DownloadResultAsync(string downloadUrl, CancellationToken cancellationToken = default)

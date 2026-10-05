@@ -111,11 +111,16 @@ public class LiveTests
     public async Task TranscribeFromPath()
     {
         using var client = Client();
+        var events = new List<ProgressEvent>();
         var result = await client.TranscribeAsync(Audio(),
-            new TranscribeOptions { SpeakerLabels = true });
+            new TranscribeOptions { SpeakerLabels = true },
+            onProgress: e => events.Add(e));
 
         Assert.False(string.IsNullOrWhiteSpace(result.Text));
         Assert.NotEmpty(result.Words); // WordTimestamps defaults to true
+        // A short clip streams no progress of its own; the caller still sees 100%.
+        Assert.NotEmpty(events);
+        Assert.Equal(100.0, events[^1].Percent);
     }
 
     [SkippableFact]
@@ -421,6 +426,11 @@ public class LiveTests
         var dg = result.ToDeepgram();
         Assert.True(dg.ContainsKey("results"),
             $"ToDeepgram has no results key: {string.Join(",", dg.Keys)}");
+        // Deepgram numbers speakers from 0; our SPEAKER_1 is its speaker 0.
+        var utts = (List<Dictionary<string, object?>>)((Dictionary<string, object?>)dg["results"]!)["utterances"]!;
+        Assert.NotEmpty(utts);
+        Assert.All(utts, u => Assert.True(u["speaker"] is int n && n >= 0, $"speaker {u["speaker"]} is not a 0-based int"));
+        Assert.Contains(utts, u => u["speaker"] is 0);
 
         var dir = Directory.CreateTempSubdirectory().FullName;
         var written = await result.SaveAsync(Path.Combine(dir, "out"));
