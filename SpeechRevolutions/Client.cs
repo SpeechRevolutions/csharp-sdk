@@ -123,6 +123,10 @@ public sealed class SpeechRevolutionsClient : IDisposable
     /// the shipped package version the way a literal does. InformationalVersion
     /// carries any "+buildmetadata" suffix, which is trimmed.
     /// </remarks>
+    /// <summary>A realtime transcription session over WebSocket (<see cref="StreamSession"/>).</summary>
+    public Task<StreamSession> StreamAsync(StreamOptions? options = null, CancellationToken cancellationToken = default) =>
+        StreamSession.OpenAsync(_baseUrl, _apiKey, UserAgent, options ?? new StreamOptions(), cancellationToken);
+
     internal static readonly string UserAgent = "speechrevolutions-csharp/" + PackageVersion();
 
     private static string PackageVersion()
