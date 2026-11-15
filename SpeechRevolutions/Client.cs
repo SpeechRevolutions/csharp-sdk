@@ -403,6 +403,10 @@ public sealed class SpeechRevolutionsClient : IDisposable
             payload["paragraphs"] = true;
         if (options.SpeakerNames)
             payload["speaker_names"] = true;
+        if (options.Summarize)
+            payload["summarize"] = true;
+        if (options.AutoChapters)
+            payload["auto_chapters"] = true;
         if (options.Verbatim is not null)
             payload["verbatim"] = options.Verbatim.Value;
         return payload;
