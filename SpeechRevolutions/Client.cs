@@ -401,6 +401,8 @@ public sealed class SpeechRevolutionsClient : IDisposable
             payload["filter_profanity"] = true;
         if (options.Paragraphs)
             payload["paragraphs"] = true;
+        if (options.SpeakerNames)
+            payload["speaker_names"] = true;
         if (options.Verbatim is not null)
             payload["verbatim"] = options.Verbatim.Value;
         return payload;

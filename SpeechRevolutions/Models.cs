@@ -91,6 +91,9 @@ public sealed class TranscribeOptions
     /// <summary>JSON output gains <c>paragraphs</c> [{start, end, speaker, text, sentences}].</summary>
     public bool Paragraphs { get; set; }
 
+    /// <summary>JSON output gains <c>speaker_names</c> {"SPEAKER_1": "Alice"} when the conversation establishes who is who.</summary>
+    public bool SpeakerNames { get; set; }
+
     /// <summary>Keep fillers and false starts; null = the account's default style.</summary>
     public bool? Verbatim { get; set; }
 
