@@ -385,6 +385,24 @@ public sealed class SpeechRevolutionsClient : IDisposable
             payload["language"] = options.Language;
         if (!string.IsNullOrEmpty(options.CallbackUrl))
             payload["callback_url"] = options.CallbackUrl;
+        if (!string.IsNullOrEmpty(options.EndUserId))
+            payload["end_user_id"] = options.EndUserId;
+        if (options.RedactPii)
+        {
+            payload["redact_pii"] = true;
+            if (options.RedactPiiPolicies is { Count: > 0 })
+                payload["redact_pii_policies"] = options.RedactPiiPolicies;
+            if (!string.IsNullOrEmpty(options.RedactPiiSub))
+                payload["redact_pii_sub"] = options.RedactPiiSub;
+        }
+        if (options.EntityDetection)
+            payload["entity_detection"] = true;
+        if (options.FilterProfanity)
+            payload["filter_profanity"] = true;
+        if (options.Paragraphs)
+            payload["paragraphs"] = true;
+        if (options.Verbatim is not null)
+            payload["verbatim"] = options.Verbatim.Value;
         return payload;
     }
 
@@ -664,6 +682,13 @@ public sealed class SpeechRevolutionsClient : IDisposable
     }
 
     // Retrieval (get by id / list)
+
+    /// <summary>Delete a job's stored transcripts now (otherwise purged after 24 h). The usage record is kept.</summary>
+    public async Task DeleteJobAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        using var _ = await ApiRequestAsync(
+            HttpMethod.Delete, $"/api/v1/jobs/{Uri.EscapeDataString(jobId)}", null, cancellationToken);
+    }
 
     /// <summary>Fetch a job's status (and a fresh download URL once complete).</summary>
     public async Task<JobStatus> GetJobStatusAsync(

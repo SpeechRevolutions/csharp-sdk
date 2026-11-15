@@ -70,6 +70,30 @@ public sealed class TranscribeOptions
     /// </summary>
     public string? CallbackUrl { get; set; }
 
+    /// <summary>Your own id for the person the audio belongs to (automatic per-user vocabulary, when enabled).</summary>
+    public string? EndUserId { get; set; }
+
+    /// <summary>Replace PII in the transcript, timings kept.</summary>
+    public bool RedactPii { get; set; }
+
+    /// <summary>email_address, phone_number, credit_card_number, us_social_security_number, ip_address (default: all).</summary>
+    public IList<string>? RedactPiiPolicies { get; set; }
+
+    /// <summary>"entity_name" (default, e.g. [PHONE_NUMBER]) or "hash" (####).</summary>
+    public string? RedactPiiSub { get; set; }
+
+    /// <summary>JSON output gains <c>entities</c> [{entity_type, text, start, end}].</summary>
+    public bool EntityDetection { get; set; }
+
+    /// <summary>Mask profanity ("f***").</summary>
+    public bool FilterProfanity { get; set; }
+
+    /// <summary>JSON output gains <c>paragraphs</c> [{start, end, speaker, text, sentences}].</summary>
+    public bool Paragraphs { get; set; }
+
+    /// <summary>Keep fillers and false starts; null = the account's default style.</summary>
+    public bool? Verbatim { get; set; }
+
     /// <summary>
     /// Render live progress bars (an <c>Uploading</c> byte bar, then a
     /// <c>Transcribing</c> bar) to <see cref="Console.Error"/>. Off by default.
