@@ -103,6 +103,14 @@ public sealed class TranscribeOptions
     /// <summary>Keep fillers and false starts; null = the account's default style.</summary>
     public bool? Verbatim { get; set; }
 
+    /// <summary>Keep repeated words ("you know, you know") while still removing fillers.
+    /// Null follows <see cref="Verbatim"/> (or the account's default).</summary>
+    public bool? KeepRepeats { get; set; }
+
+    /// <summary>Favor the main model's reading of names when the models disagree.
+    /// Null uses the account's default (off).</summary>
+    public bool? ConservativeVote { get; set; }
+
     /// <summary>
     /// Render live progress bars (an <c>Uploading</c> byte bar, then a
     /// <c>Transcribing</c> bar) to <see cref="Console.Error"/>. Off by default.

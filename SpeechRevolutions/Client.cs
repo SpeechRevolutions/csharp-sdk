@@ -413,6 +413,10 @@ public sealed class SpeechRevolutionsClient : IDisposable
             payload["auto_chapters"] = true;
         if (options.Verbatim is not null)
             payload["verbatim"] = options.Verbatim.Value;
+        if (options.KeepRepeats is not null)
+            payload["keep_repeats"] = options.KeepRepeats.Value;
+        if (options.ConservativeVote is not null)
+            payload["conservative_vote"] = options.ConservativeVote.Value;
         return payload;
     }
 
