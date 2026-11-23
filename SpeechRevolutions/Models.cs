@@ -47,7 +47,8 @@ public sealed class TranscribeOptions
 {
     public OutputType OutputType { get; set; } = OutputType.Json;
     public bool WordTimestamps { get; set; } = true;
-    public bool SpeakerLabels { get; set; } = true;
+    /// <summary>Speaker diarization. An add-on (+$0.02 per audio hour), so off unless set.</summary>
+    public bool SpeakerLabels { get; set; }
     /// <summary>Alias for SpeakerLabels (ElevenLabs / Deepgram).</summary>
     public bool? Diarize { get; set; }
     public bool Nltk { get; set; } = true;
@@ -69,6 +70,21 @@ public sealed class TranscribeOptions
     /// (<c>X-SR-Signature: sha256=...</c>).
     /// </summary>
     public string? CallbackUrl { get; set; }
+
+    /// <summary>Add-on: a summary (<see cref="TranscriptResult.Summary"/>). +$0.02 per audio hour.</summary>
+    public bool Summarize { get; set; }
+
+    /// <summary>Add-on: strong profanity masked ("s***") in every output format. +$0.01 per audio hour.</summary>
+    public bool FilterProfanity { get; set; }
+
+    /// <summary>Speaker-aware paragraphs in the JSON output (<see cref="TranscriptResult.Paragraphs"/>). Free.</summary>
+    public bool Paragraphs { get; set; }
+
+    /// <summary>Keep (true) or drop (false) fillers and false starts. Null leaves the server default.</summary>
+    public bool? Verbatim { get; set; }
+
+    /// <summary>Any other API option, sent as given (snake_case, as the API names it).</summary>
+    public IDictionary<string, object?>? Extra { get; set; }
 
     /// <summary>
     /// Render live progress bars (an <c>Uploading</c> byte bar, then a
@@ -169,6 +185,30 @@ public sealed class Utterance
     public IReadOnlyList<Word> Words { get; init; } = Array.Empty<Word>();
 }
 
+/// <summary>The Summarize add-on: a short summary and its key points.</summary>
+public sealed class Summary
+{
+    public string Text { get; init; } = "";
+    public IReadOnlyList<string> Bullets { get; init; } = Array.Empty<string>();
+}
+
+public sealed class Sentence
+{
+    public string Text { get; init; } = "";
+    public double? Start { get; init; }
+    public double? End { get; init; }
+}
+
+/// <summary>A speaker-aware paragraph: one speaker, split at long pauses.</summary>
+public sealed class Paragraph
+{
+    public string Text { get; init; } = "";
+    public string? Speaker { get; init; }
+    public double? Start { get; init; }
+    public double? End { get; init; }
+    public IReadOnlyList<Sentence> Sentences { get; init; } = Array.Empty<Sentence>();
+}
+
 public sealed class TranscriptResult
 {
     public required string JobId { get; init; }
@@ -178,6 +218,10 @@ public sealed class TranscriptResult
     public IReadOnlyList<Word> Words { get; init; } = Array.Empty<Word>();
     public IReadOnlyList<Utterance> Utterances { get; init; } = Array.Empty<Utterance>();
     public IReadOnlyList<LanguageSegment> Languages { get; init; } = Array.Empty<LanguageSegment>();
+    /// <summary>Set when the request asked for <see cref="TranscribeOptions.Summarize"/>.</summary>
+    public Summary? Summary { get; init; }
+    /// <summary>Set when the request asked for <see cref="TranscribeOptions.Paragraphs"/>.</summary>
+    public IReadOnlyList<Paragraph> Paragraphs { get; init; } = Array.Empty<Paragraph>();
     public string? RawJson { get; init; }
 
     private string? _text;
@@ -222,6 +266,8 @@ public sealed class TranscriptResult
             ["output_type"] = OutputType,
         };
         if (Languages.Count > 0) d["languages"] = Languages;
+        if (Summary is not null) d["summary"] = Summary;
+        if (Paragraphs.Count > 0) d["paragraphs"] = Paragraphs;
         return d;
     }
 
@@ -351,6 +397,41 @@ public sealed class TranscriptResult
             }
 
             doc.RootElement.TryGetProperty("diarization", out var diarization);
+            Summary? summary = null;
+            if (doc.RootElement.TryGetProperty("summary", out var sm) && sm.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                summary = new Summary
+                {
+                    Text = sm.TryGetProperty("text", out var st) ? st.GetString() ?? "" : "",
+                    Bullets = sm.TryGetProperty("bullets", out var bl) && bl.ValueKind == System.Text.Json.JsonValueKind.Array
+                        ? bl.EnumerateArray().Select(b => b.GetString() ?? "").Where(b => b.Length > 0).ToList()
+                        : new List<string>(),
+                };
+            }
+            var paragraphs = new List<Paragraph>();
+            if (doc.RootElement.TryGetProperty("paragraphs", out var pgs) && pgs.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                static double? Num(System.Text.Json.JsonElement el, string name) =>
+                    el.TryGetProperty(name, out var v) && v.TryGetDouble(out var d) ? d : null;
+                foreach (var pg in pgs.EnumerateArray())
+                {
+                    paragraphs.Add(new Paragraph
+                    {
+                        Text = pg.TryGetProperty("text", out var pt) ? pt.GetString() ?? "" : "",
+                        Speaker = pg.TryGetProperty("speaker", out var ps) && ps.ValueKind != System.Text.Json.JsonValueKind.Null ? ps.ToString() : null,
+                        Start = Num(pg, "start"),
+                        End = Num(pg, "end"),
+                        Sentences = pg.TryGetProperty("sentences", out var ss) && ss.ValueKind == System.Text.Json.JsonValueKind.Array
+                            ? ss.EnumerateArray().Select(x => new Sentence
+                            {
+                                Text = x.TryGetProperty("text", out var xt) ? xt.GetString() ?? "" : "",
+                                Start = Num(x, "start"),
+                                End = Num(x, "end"),
+                            }).ToList()
+                            : new List<Sentence>(),
+                    });
+                }
+            }
             return new TranscriptResult
             {
                 JobId = jobId,
@@ -360,6 +441,8 @@ public sealed class TranscriptResult
                 Words = words,
                 Utterances = BuildUtterances(words, diarization),
                 Languages = languages,
+                Summary = summary,
+                Paragraphs = paragraphs,
                 RawJson = System.Text.Encoding.UTF8.GetString(content),
                 Text = JoinWords(words),
             };

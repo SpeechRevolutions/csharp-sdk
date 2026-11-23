@@ -57,11 +57,16 @@ Pass a `TranscribeOptions`. `Diarize` is a Deepgram-compatible alias for
 |--------|------|---------|-------|
 | `OutputType` | `OutputType` | `Json` | `Txt \| Json \| Srt \| Vtt \| Docx \| Pdf` |
 | `WordTimestamps` | `bool` | `true` | per-word start/end times |
-| `SpeakerLabels` | `bool` | `true` | label who spoke each segment |
+| `SpeakerLabels` | `bool` | `false` | speaker diarization; add-on, +$0.02/hr |
 | `Diarize` | `bool?` | `null` | alias for `SpeakerLabels` |
 | `Nltk` | `bool` | `true` | restore punctuation & capitalization |
 | `Tier` | `ProcessingTier` | `Standard` | `Standard` — the only tier currently available |
-| `CustomVocabulary` | `IReadOnlyList<string>?` | `null` | domain terms to bias toward |
+| `CustomVocabulary` | `IReadOnlyList<string>?` | `null` | keyterms, given to the model and matched by sound; add-on, +$0.05/hr |
+| `Summarize` | `bool` | `false` | `result.Summary` (`Text`, `Bullets`); add-on, +$0.02/hr |
+| `FilterProfanity` | `bool` | `false` | strong profanity masked (`s***`); add-on, +$0.01/hr |
+| `Paragraphs` | `bool` | `false` | `result.Paragraphs`, speaker-aware with sentences; free |
+| `Verbatim` | `bool?` | `null` (server default) | keep or drop fillers and false starts |
+| `Extra` | `IDictionary<string, object?>?` | `null` | any other API option, sent as given |
 | `Language` | `string?` | `null` | ISO 639-1 code (e.g. `"en"`, `"ru"`); `null` = auto-detect |
 | `Progress` | `bool` | `false` | render live console bars (see below) |
 | `OnUploadProgress` | `Action<ProgressEvent>?` | `null` | upload-progress callback (see below) |
@@ -75,6 +80,9 @@ var captions = await client.TranscribeAsync("meeting.mp3", new TranscribeOptions
 });
 Console.WriteLine(captions.Text); // the SRT document
 ```
+
+Batch is $0.09 per audio hour; add-ons are charged per audio hour only when turned on.
+`await client.DeleteJobAsync(jobId)` deletes a job's transcripts before the automatic purge.
 
 `Language` skips automatic language detection and transcribes the whole file in
 that language. Pinning the wrong language makes the model translate into it
@@ -201,6 +209,7 @@ Default `OutputType` is `Json`, which the SDK parses into a transcript-first
 | `result.Transcript` | Deepgram-style alias |
 | `result.Words` | word + `Start` / `End` / `Speaker` |
 | `result.Utterances` | AssemblyAI-style speaker turns |
+| `result.Summary` / `result.Paragraphs` | set when requested |
 | `result.ToDeepgram()` | Deepgram-shaped dictionary (0-based integer speakers) |
 | `result.ToDict()` | normalized dictionary |
 | `result.Content` | raw response bytes |
@@ -214,6 +223,49 @@ own.
 var outPath = await result.SaveAsync("output"); // -> output.json
 Console.WriteLine($"saved to {outPath}");
 ```
+
+## Real-time streaming
+
+Real-time transcription over WebSocket, $0.15 per session hour (early access). Audio is PCM16
+mono 16 kHz; `Streaming.LoadPcm16Async(path)` converts any file with ffmpeg. No extra package:
+it uses .NET's `ClientWebSocket`.
+
+```csharp
+await using var session = await client.StreamAsync(new StreamOptions
+{
+    Language = "en", // or Languages = new[] { "en", "ja" }, or null to detect
+    Vocabulary = new[] { "Northwind" },
+    OnEvent = e =>
+    {
+        if (e.Type == "transcription.partial") Console.Write($"\r{e.Text}");
+        if (e.Type == "final") Console.WriteLine($"\n[{e.Start:F2}-{e.End:F2}] {e.Text}");
+    },
+});
+foreach (var chunk in Microphone()) // PCM16 mono 16 kHz, at the pace it's produced
+    session.SendAudio(chunk);
+var result = await session.FinishAsync(); // waits for transcription.done
+Console.WriteLine(result.Text);
+```
+
+| Event | Fields |
+|---|---|
+| `session.created` | `JobId` |
+| `transcription.partial` | `Index`, `Text`, `Stable` (`Text[..Stable]` is settled), `AudioS` |
+| `final` | `Index`, `Text`, `Start`, `End` |
+| `final.revised` | `Index`, `Text`: a better version of an earlier final |
+| `speech.started` / `turn.ended` | `AudioS` / `Index`, `Start`, `End`, `Probability`, `Forced` |
+| `language.detected` | `Language`, `Index` |
+| `transcription.done` | `Text` |
+| `error` | `Code`, `Message` |
+
+- `await foreach (var e in session.Events.ReadAllAsync())` reads the same events as `OnEvent`.
+- `TurnDetection = new TurnDetection { Threshold = 0.5, MaxSilenceMs = 800 }` tunes when a turn
+  ends; `await session.EndTurnAsync()` ends one now (push-to-talk).
+- **Dropped connections are handled:** the session keeps unacknowledged audio, reconnects with its
+  job id for up to 60 s, and replays it. The result comes back complete under the same `JobId`.
+- `await client.StreamFileAsync("call.mp3", options)` streams a recording in real time. For
+  recordings in production, `TranscribeAsync` is faster and cheaper.
+- Audio must arrive in real time: the server takes at most about 10 seconds ahead of the clock.
 
 ## Timeouts and retries
 

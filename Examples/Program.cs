@@ -2,6 +2,7 @@
 //   dotnet run                # transcribe (default) — options + live progress bars, saves the file
 //   dotnet run -- retrieve    # SubmitAsync() without waiting, then poll/get a job by id + list
 //   dotnet run -- progress    # live progress as one 0–100 number (web-app pattern)
+//   dotnet run -- stream <file> [language]   # real-time streaming: partials and finals as they arrive
 // The API key is read from SPEECHREVOLUTIONS_API_KEY.
 
 using SpeechRevolutions;
@@ -15,6 +16,9 @@ switch (mode)
     case "progress":
         await Examples.ProgressAsync();
         break;
+    case "stream":
+        await Examples.StreamAsync(args[1], args.Length > 2 ? args[2] : null);
+        break;
     default:
         await Examples.TranscribeAsync();
         break;
@@ -24,6 +28,27 @@ return 0;
 
 static class Examples
 {
+    // --- stream: a file streamed as if live, printing partials and finals -----
+    public static async Task StreamAsync(string path, string? language)
+    {
+        using var client = new SpeechRevolutionsClient();
+        var result = await client.StreamFileAsync(path, new StreamOptions
+        {
+            Language = language, // null: detected
+            OnEvent = e =>
+            {
+                switch (e.Type)
+                {
+                    case "session.created": Console.WriteLine($"session {e.JobId}"); break;
+                    case "transcription.partial": Console.Write($"\r\u001b[K{e.Text}"); break; // redraw the open utterance
+                    case "final": Console.WriteLine($"\r\u001b[K[{e.Start,6:F2}-{e.End,6:F2}] {e.Text}"); break;
+                    case "language.detected": Console.WriteLine($"   language: {e.Language}"); break;
+                }
+            },
+        });
+        Console.WriteLine($"\n{result.Finals.Count} finals, job {result.JobId}\n{result.Text}");
+    }
+
     // --- transcribe: every option explicit, live bars, save to disk ---------
     public static async Task TranscribeAsync()
     {

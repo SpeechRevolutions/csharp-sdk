@@ -385,6 +385,12 @@ public sealed class SpeechRevolutionsClient : IDisposable
             payload["language"] = options.Language;
         if (!string.IsNullOrEmpty(options.CallbackUrl))
             payload["callback_url"] = options.CallbackUrl;
+        if (options.Summarize) payload["summarize"] = true;
+        if (options.FilterProfanity) payload["filter_profanity"] = true;
+        if (options.Paragraphs) payload["paragraphs"] = true;
+        if (options.Verbatim is not null) payload["verbatim"] = options.Verbatim.Value;
+        if (options.Extra is not null)
+            foreach (var kv in options.Extra) payload[kv.Key] = kv.Value;
         return payload;
     }
 
@@ -646,6 +652,15 @@ public sealed class SpeechRevolutionsClient : IDisposable
         using var _ = await ApiRequestAsync(HttpMethod.Post, "/api/v1/jobs/cancel", new { job_id = jobId }, cancellationToken);
     }
 
+    /// <summary>
+    /// Delete a job's transcripts now instead of waiting for the automatic purge. A running job
+    /// is cancelled first, so nothing is written after the delete.
+    /// </summary>
+    public async Task DeleteJobAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        using var _ = await ApiRequestAsync(HttpMethod.Delete, $"/api/v1/jobs/{Uri.EscapeDataString(jobId)}", null, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<bool>> CheckFailedAsync(IEnumerable<string> jobIds, CancellationToken cancellationToken = default)
     {
         using var doc = await ApiRequestAsync(
@@ -704,6 +719,37 @@ public sealed class SpeechRevolutionsClient : IDisposable
     }
 
     /// <summary>List the caller's most-recent jobs (newest first), cursor-paginated.</summary>
+    // Real-time streaming
+
+    /// <summary>
+    /// Open a real-time transcription session; returns once the server has started it. Send PCM16
+    /// mono 16 kHz with <see cref="LiveSession.SendAudio"/> as it is produced and call
+    /// <see cref="LiveSession.FinishAsync"/> at the end. The session buffers unacknowledged audio
+    /// and resumes a dropped connection on its own.
+    /// </summary>
+    public async Task<LiveSession> StreamAsync(StreamOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var baseUrl = _baseUrl.StartsWith("https://", StringComparison.Ordinal) ? "wss://" + _baseUrl["https://".Length..]
+            : _baseUrl.StartsWith("http://", StringComparison.Ordinal) ? "ws://" + _baseUrl["http://".Length..]
+            : _baseUrl;
+        var session = new LiveSession(baseUrl + "/api/v1/stream", _apiKey, options ?? new StreamOptions());
+        await session.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        return session;
+    }
+
+    /// <summary>
+    /// Stream a file as if it were live audio, in real time (the server takes audio at most ~10 s
+    /// ahead of the clock). For testing a streaming integration; for files,
+    /// <see cref="TranscribeAsync(string, TranscribeOptions?, Action{ProgressEvent}?, CancellationToken)"/>
+    /// is faster and cheaper. Needs ffmpeg for anything but a 16 kHz mono 16-bit WAV.
+    /// </summary>
+    public async Task<StreamResult> StreamFileAsync(string path, StreamOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var pcm = await Streaming.LoadPcm16Async(path, cancellationToken).ConfigureAwait(false);
+        var session = await StreamAsync(options, cancellationToken).ConfigureAwait(false);
+        return await Streaming.StreamPcmAsync(session, pcm, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<JobList> ListJobsAsync(
         int limit = 50, string? before = null, CancellationToken cancellationToken = default)
     {
