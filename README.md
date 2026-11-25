@@ -63,7 +63,11 @@ Pass a `TranscribeOptions`. `Diarize` is a Deepgram-compatible alias for
 | `Tier` | `ProcessingTier` | `Standard` | `Standard` — the only tier currently available |
 | `CustomVocabulary` | `IReadOnlyList<string>?` | `null` | keyterms, given to the model and matched by sound; add-on, +$0.05/hr |
 | `Summarize` | `bool` | `false` | `result.Summary` (`Text`, `Bullets`); add-on, +$0.02/hr |
+| `AutoChapters` | `bool` | `false` | `result.Chapters`: headline + gist sections covering the whole recording; with `Summarize`: +$0.02/hr once |
 | `FilterProfanity` | `bool` | `false` | strong profanity masked (`s***`); add-on, +$0.01/hr |
+| `KnownSpeakers` | `IReadOnlyList<string>?` | `null` | speaker identification: `result.SpeakerNames` maps each speaker to one of them, or leaves it unnamed (needs `SpeakerLabels`); add-on, +$0.02/hr |
+| `RedactPii` | `bool` | `false` | names, organisations, places, addresses, dates, account / card / phone / SSN / IP numbers replaced by `[PERSON_NAME]`-style labels (or `####` with `RedactPiiSub = "hash"`); narrow with `RedactPiiPolicies` (`PiiPolicies.All`); add-on, +$0.08/hr |
+| `EntityDetection` | `bool` | `false` | `result.Entities`: the same types, typed and timed; add-on, +$0.08/hr |
 | `Paragraphs` | `bool` | `false` | `result.Paragraphs`, speaker-aware with sentences; free |
 | `Verbatim` | `bool?` | `null` (server default) | keep or drop fillers and false starts |
 | `Extra` | `IDictionary<string, object?>?` | `null` | any other API option, sent as given |
@@ -82,6 +86,8 @@ Console.WriteLine(captions.Text); // the SRT document
 ```
 
 Batch is $0.09 per audio hour; add-ons are charged per audio hour only when turned on.
+An add-on that could not be delivered is not charged (a summary that failed; PII redaction that could
+only use pattern matching, which `result.PiiStatus == "patterns_only"` reports).
 `await client.DeleteJobAsync(jobId)` deletes a job's transcripts before the automatic purge.
 
 `Language` skips automatic language detection and transcribes the whole file in
@@ -210,6 +216,7 @@ Default `OutputType` is `Json`, which the SDK parses into a transcript-first
 | `result.Words` | word + `Start` / `End` / `Speaker` |
 | `result.Utterances` | AssemblyAI-style speaker turns |
 | `result.Summary` / `result.Paragraphs` | set when requested |
+| `result.Chapters` / `result.Entities` / `result.SpeakerNames` / `result.PiiStatus` | set when requested |
 | `result.ToDeepgram()` | Deepgram-shaped dictionary (0-based integer speakers) |
 | `result.ToDict()` | normalized dictionary |
 | `result.Content` | raw response bytes |
@@ -251,16 +258,25 @@ Console.WriteLine(result.Text);
 |---|---|
 | `session.created` | `JobId` |
 | `transcription.partial` | `Index`, `Text`, `Stable` (`Text[..Stable]` is settled), `AudioS` |
-| `final` | `Index`, `Text`, `Start`, `End` |
+| `final` | `Index`, `Text`, `Start`, `End`, `PiiStatus` (`"patterns_only"` when redaction fell back to patterns) |
 | `final.revised` | `Index`, `Text`: a better version of an earlier final |
 | `speech.started` / `turn.ended` | `AudioS` / `Index`, `Start`, `End`, `Probability`, `Forced` |
 | `language.detected` | `Language`, `Index` |
 | `transcription.done` | `Text` |
+| `voice_focus` | `Active`: the stream is locked to the voiceprint |
 | `error` | `Code`, `Message` |
 
 - `await foreach (var e in session.Events.ReadAllAsync())` reads the same events as `OnEvent`.
 - `TurnDetection = new TurnDetection { Threshold = 0.5, MaxSilenceMs = 800 }` tunes when a turn
   ends; `await session.EndTurnAsync()` ends one now (push-to-talk).
+- **PII redaction** (+$0.12 per session hour): `RedactPii = true` redacts finals before they reach you
+  (`RedactPiiPolicies` / `RedactPiiSub` as in batch). Partials are not sent while it is on, unless
+  `IncludePartials = true`, in which case they arrive unredacted.
+- **Voice focus** (+$0.10 per session hour): lock the stream to one enrolled voice, so other people and
+  background voices are left out. Enrol once with `CaptureVoiceprint = true`: the result carries
+  `result.Voiceprint` and `result.VoiceprintQuality` (capture again until `Ok`). Then pass
+  `Voiceprint = ...` (and optionally `SpeakerPolicy = "strict"`). A `voice_focus` event says whether the
+  lock is active, and only an active lock is billed. You keep the voiceprint; we keep none after the session.
 - **Dropped connections are handled:** the session keeps unacknowledged audio, reconnects with its
   job id for up to 60 s, and replays it. The result comes back complete under the same `JobId`.
 - `await client.StreamFileAsync("call.mp3", options)` streams a recording in real time. For

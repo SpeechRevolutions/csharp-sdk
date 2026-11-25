@@ -388,6 +388,14 @@ public sealed class SpeechRevolutionsClient : IDisposable
         if (options.Summarize) payload["summarize"] = true;
         if (options.FilterProfanity) payload["filter_profanity"] = true;
         if (options.Paragraphs) payload["paragraphs"] = true;
+        if (options.AutoChapters) payload["auto_chapters"] = true;
+        if (options.RedactPii) payload["redact_pii"] = true;
+        if (options.EntityDetection) payload["entity_detection"] = true;
+        if (options.KnownSpeakers is { Count: > 0 }) payload["known_speakers"] = options.KnownSpeakers.ToList();
+        if (options.RedactPii && options.RedactPiiPolicies is { Count: > 0 })
+            payload["redact_pii_policies"] = options.RedactPiiPolicies.ToList();
+        if (options.RedactPii && !string.IsNullOrEmpty(options.RedactPiiSub))
+            payload["redact_pii_sub"] = options.RedactPiiSub;
         if (options.Verbatim is not null) payload["verbatim"] = options.Verbatim.Value;
         if (options.Extra is not null)
             foreach (var kv in options.Extra) payload[kv.Key] = kv.Value;

@@ -43,6 +43,16 @@ public static class ProcessingTierExtensions
     };
 }
 
+/// <summary>The PII types <see cref="TranscribeOptions.RedactPiiPolicies"/> accepts (the server's list; the default is all).</summary>
+public static class PiiPolicies
+{
+    public static readonly IReadOnlyList<string> All = new[]
+    {
+        "person_name", "organization", "location", "address", "date_of_birth", "date", "account_number",
+        "email_address", "phone_number", "credit_card_number", "us_social_security_number", "ip_address",
+    };
+}
+
 public sealed class TranscribeOptions
 {
     public OutputType OutputType { get; set; } = OutputType.Json;
@@ -79,6 +89,34 @@ public sealed class TranscribeOptions
 
     /// <summary>Speaker-aware paragraphs in the JSON output (<see cref="TranscriptResult.Paragraphs"/>). Free.</summary>
     public bool Paragraphs { get; set; }
+
+    /// <summary>
+    /// Chapters covering the whole recording (<see cref="TranscriptResult.Chapters"/>). Billed with
+    /// summarization: +$0.02 per audio hour, once, with or without <see cref="Summarize"/>.
+    /// </summary>
+    public bool AutoChapters { get; set; }
+
+    /// <summary>
+    /// Speaker identification: the names or roles who may be speaking (up to 20). Each diarized speaker is
+    /// matched to one, or left unnamed (<see cref="TranscriptResult.SpeakerNames"/>). Needs
+    /// <see cref="SpeakerLabels"/>. +$0.02 per audio hour.
+    /// </summary>
+    public IReadOnlyList<string>? KnownSpeakers { get; set; }
+
+    /// <summary>
+    /// PII redaction in every output format: names, organisations, places, addresses, dates, account / card /
+    /// phone / SSN / IP numbers. +$0.08 per audio hour. <see cref="RedactPiiPolicies"/> narrows the types
+    /// (default all, see <see cref="PiiPolicies.All"/>); <see cref="RedactPiiSub"/> is <c>"entity_name"</c>
+    /// (<c>[PERSON_NAME]</c>, the default) or <c>"hash"</c> (<c>####</c>).
+    /// </summary>
+    public bool RedactPii { get; set; }
+    /// <summary>The PII types to redact (<see cref="PiiPolicies.All"/>). Sent only with <see cref="RedactPii"/>.</summary>
+    public IReadOnlyList<string>? RedactPiiPolicies { get; set; }
+    /// <summary><c>"entity_name"</c> or <c>"hash"</c>. Sent only with <see cref="RedactPii"/>.</summary>
+    public string? RedactPiiSub { get; set; }
+
+    /// <summary>Entity detection (<see cref="TranscriptResult.Entities"/>): the same types, typed and timed. +$0.08 per audio hour.</summary>
+    public bool EntityDetection { get; set; }
 
     /// <summary>Keep (true) or drop (false) fillers and false starts. Null leaves the server default.</summary>
     public bool? Verbatim { get; set; }
@@ -199,6 +237,24 @@ public sealed class Sentence
     public double? End { get; init; }
 }
 
+/// <summary>The AutoChapters add-on: one section of the recording.</summary>
+public sealed class Chapter
+{
+    public double? Start { get; init; }
+    public double? End { get; init; }
+    public string Headline { get; init; } = "";
+    public string Gist { get; init; } = "";
+}
+
+/// <summary>EntityDetection: one item found in the transcript. <see cref="Text"/> is its placeholder when also redacted.</summary>
+public sealed class Entity
+{
+    public string EntityType { get; init; } = "";
+    public string Text { get; init; } = "";
+    public double? Start { get; init; }
+    public double? End { get; init; }
+}
+
 /// <summary>A speaker-aware paragraph: one speaker, split at long pauses.</summary>
 public sealed class Paragraph
 {
@@ -222,6 +278,14 @@ public sealed class TranscriptResult
     public Summary? Summary { get; init; }
     /// <summary>Set when the request asked for <see cref="TranscribeOptions.Paragraphs"/>.</summary>
     public IReadOnlyList<Paragraph> Paragraphs { get; init; } = Array.Empty<Paragraph>();
+    /// <summary>Set when the request asked for <see cref="TranscribeOptions.AutoChapters"/>: sections covering the whole recording.</summary>
+    public IReadOnlyList<Chapter> Chapters { get; init; } = Array.Empty<Chapter>();
+    /// <summary>Set when the request asked for <see cref="TranscribeOptions.EntityDetection"/>.</summary>
+    public IReadOnlyList<Entity> Entities { get; init; } = Array.Empty<Entity>();
+    /// <summary>Speaker label to name or role (<see cref="TranscribeOptions.KnownSpeakers"/>); unnamed speakers are absent.</summary>
+    public IReadOnlyDictionary<string, string> SpeakerNames { get; init; } = new Dictionary<string, string>();
+    /// <summary><c>"patterns_only"</c> when PII redaction / entity detection could only use pattern matching (not charged).</summary>
+    public string? PiiStatus { get; init; }
     public string? RawJson { get; init; }
 
     private string? _text;
@@ -268,6 +332,10 @@ public sealed class TranscriptResult
         if (Languages.Count > 0) d["languages"] = Languages;
         if (Summary is not null) d["summary"] = Summary;
         if (Paragraphs.Count > 0) d["paragraphs"] = Paragraphs;
+        if (Chapters.Count > 0) d["chapters"] = Chapters;
+        if (Entities.Count > 0) d["entities"] = Entities;
+        if (SpeakerNames.Count > 0) d["speaker_names"] = SpeakerNames;
+        if (!string.IsNullOrEmpty(PiiStatus)) d["pii_status"] = PiiStatus;
         return d;
     }
 
@@ -432,12 +500,34 @@ public sealed class TranscriptResult
                     });
                 }
             }
+            static double? Num2(System.Text.Json.JsonElement el, string name) =>
+                el.TryGetProperty(name, out var v) && v.TryGetDouble(out var d) ? d : null;
+            static string Str(System.Text.Json.JsonElement el, string name) =>
+                el.TryGetProperty(name, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() ?? "" : "";
+            var chapters = new List<Chapter>();
+            if (doc.RootElement.TryGetProperty("chapters", out var chs) && chs.ValueKind == System.Text.Json.JsonValueKind.Array)
+                foreach (var c in chs.EnumerateArray().Where(c => c.ValueKind == System.Text.Json.JsonValueKind.Object))
+                    chapters.Add(new Chapter { Start = Num2(c, "start"), End = Num2(c, "end"), Headline = Str(c, "headline"), Gist = Str(c, "gist") });
+            var entities = new List<Entity>();
+            if (doc.RootElement.TryGetProperty("entities", out var ens) && ens.ValueKind == System.Text.Json.JsonValueKind.Array)
+                foreach (var en in ens.EnumerateArray().Where(en => en.ValueKind == System.Text.Json.JsonValueKind.Object))
+                    entities.Add(new Entity { EntityType = Str(en, "entity_type"), Text = Str(en, "text"), Start = Num2(en, "start"), End = Num2(en, "end") });
+            var speakerNames = new Dictionary<string, string>();
+            if (doc.RootElement.TryGetProperty("speaker_names", out var sn) && sn.ValueKind == System.Text.Json.JsonValueKind.Object)
+                foreach (var kv in sn.EnumerateObject())
+                    speakerNames[kv.Name] = kv.Value.ValueKind == System.Text.Json.JsonValueKind.String ? kv.Value.GetString() ?? "" : kv.Value.ToString();
+            string? piiStatus = doc.RootElement.TryGetProperty("pii_status", out var ps0) && ps0.ValueKind == System.Text.Json.JsonValueKind.String
+                ? ps0.GetString() : null;
             return new TranscriptResult
             {
                 JobId = jobId,
                 Content = content,
                 DownloadUrl = downloadUrl,
                 OutputType = outputType,
+                Chapters = chapters,
+                Entities = entities,
+                SpeakerNames = speakerNames,
+                PiiStatus = piiStatus,
                 Words = words,
                 Utterances = BuildUtterances(words, diarization),
                 Languages = languages,

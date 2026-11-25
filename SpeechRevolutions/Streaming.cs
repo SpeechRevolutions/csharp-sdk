@@ -29,7 +29,9 @@ public sealed class StreamException : SpeechRevolutionsException
 /// <c>session.resumed</c>, <c>transcription.partial</c> (the open utterance so far; replaces the
 /// previous partial of that <see cref="Index"/>; <c>Text[..Stable]</c> is settled), <c>final</c>,
 /// <c>final.revised</c>, <c>speech.started</c>, <c>turn.ended</c>, <c>language.detected</c>,
-/// <c>language.unsupported</c>, <c>audio.committed</c>, <c>transcription.done</c>, <c>error</c>.
+/// <c>language.unsupported</c>, <c>audio.committed</c>, <c>transcription.done</c>,
+/// <c>voice_focus</c> (<see cref="Active"/>: the stream is locked to the voiceprint), <c>warning</c>, <c>error</c>.
+/// A redacted final whose PII pass fell back to patterns only carries <see cref="PiiStatus"/> <c>"patterns_only"</c>.
 /// </summary>
 public sealed class StreamEvent
 {
@@ -46,6 +48,10 @@ public sealed class StreamEvent
     public string? JobId { get; init; }
     public string? Code { get; init; }
     public string? Message { get; init; }
+    /// <summary>On a <c>voice_focus</c> event: whether the stream is locked to the voiceprint (only then billed).</summary>
+    public bool? Active { get; init; }
+    /// <summary>On a redacted final: <c>"patterns_only"</c> when the PII pass could only use pattern matching.</summary>
+    public string? PiiStatus { get; init; }
     /// <summary>The event's JSON as received.</summary>
     public required string RawJson { get; init; }
 
@@ -60,6 +66,7 @@ public sealed class StreamEvent
             string? S(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
             double? D(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
             int? I(string k) => r.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number ? (int)v.GetDouble() : null;
+            bool? B(string k) => r.TryGetProperty(k, out var v) && (v.ValueKind is JsonValueKind.True or JsonValueKind.False) ? v.GetBoolean() : null;
             var err = S("error");
             return new StreamEvent
             {
@@ -72,8 +79,10 @@ public sealed class StreamEvent
                 AudioS = D("audio_s"),
                 Language = S("language"),
                 Probability = D("probability"),
-                Forced = r.TryGetProperty("forced", out var f) && (f.ValueKind is JsonValueKind.True or JsonValueKind.False) ? f.GetBoolean() : null,
+                Forced = B("forced"),
                 JobId = S("job_id"),
+                Active = B("active"),
+                PiiStatus = S("pii_status"),
                 Code = S("code") ?? (err is not null && !err.Contains(' ') ? err : null),
                 Message = S("message") ?? err,
                 RawJson = json,
@@ -100,6 +109,37 @@ public sealed class StreamResult
     public IReadOnlyList<StreamFinal> Finals { get; init; } = Array.Empty<StreamFinal>();
     /// <summary>False when the session ended before <c>transcription.done</c>.</summary>
     public bool Complete { get; init; }
+    /// <summary>With <see cref="StreamOptions.CaptureVoiceprint"/>: the sealed voiceprint to pass as
+    /// <see cref="StreamOptions.Voiceprint"/> later. You keep it; the server keeps none after the session.</summary>
+    public string? Voiceprint { get; init; }
+    /// <summary>The captured voiceprint's quality; capture again until <see cref="VoiceprintQuality.Ok"/>.</summary>
+    public VoiceprintQuality? VoiceprintQuality { get; init; }
+}
+
+/// <summary>How usable a captured voiceprint is (<c>voiceprint_quality</c> in <c>transcription.done</c>).</summary>
+public sealed class VoiceprintQuality
+{
+    public double? Score { get; init; }
+    public bool Ok { get; init; }
+    public IReadOnlyList<string> Reasons { get; init; } = Array.Empty<string>();
+    /// <summary>The object's JSON as received.</summary>
+    public string RawJson { get; init; } = "{}";
+
+    internal static VoiceprintQuality? From(JsonElement done)
+    {
+        if (done.ValueKind != JsonValueKind.Object || !done.TryGetProperty("voiceprint_quality", out var q)
+            || q.ValueKind != JsonValueKind.Object)
+            return null;
+        return new VoiceprintQuality
+        {
+            Score = q.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetDouble() : null,
+            Ok = q.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True,
+            Reasons = q.TryGetProperty("reasons", out var rs) && rs.ValueKind == JsonValueKind.Array
+                ? rs.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() ?? "" : x.ToString()).ToList()
+                : new List<string>(),
+            RawJson = q.GetRawText(),
+        };
+    }
 }
 
 /// <summary>Tunes when a turn ends.</summary>
@@ -121,6 +161,26 @@ public sealed class StreamOptions
     /// <summary>Names and terms to recognise (included in the streaming price).</summary>
     public IReadOnlyList<string>? Vocabulary { get; set; }
     public TurnDetection? TurnDetection { get; set; }
+    /// <summary>
+    /// PII redaction (+$0.12 per session hour): finals are redacted before they reach you. Partials are not
+    /// sent while it is on, unless <see cref="IncludePartials"/> is true, in which case they arrive unredacted.
+    /// </summary>
+    public bool RedactPii { get; set; }
+    /// <summary>The PII types to redact (<see cref="PiiPolicies.All"/>). Sent only with <see cref="RedactPii"/>.</summary>
+    public IReadOnlyList<string>? RedactPiiPolicies { get; set; }
+    /// <summary><c>"entity_name"</c> or <c>"hash"</c>. Sent only with <see cref="RedactPii"/>.</summary>
+    public string? RedactPiiSub { get; set; }
+    /// <summary>Send partials (unredacted) even with <see cref="RedactPii"/>. Null leaves the server default.</summary>
+    public bool? IncludePartials { get; set; }
+    /// <summary>
+    /// Voice focus (+$0.10 per session hour, billed only while a <c>voice_focus</c> event says active): lock
+    /// the stream to this enrolled voice (a <see cref="StreamResult.Voiceprint"/> from an earlier session).
+    /// </summary>
+    public string? Voiceprint { get; set; }
+    /// <summary>Enrol a voice: the result carries <see cref="StreamResult.Voiceprint"/> and its quality.</summary>
+    public bool CaptureVoiceprint { get; set; }
+    /// <summary>With <see cref="Voiceprint"/>: <c>"prefer"</c> or <c>"strict"</c>.</summary>
+    public string? SpeakerPolicy { get; set; }
     /// <summary>Called for every server event, from the session's reader task. Don't block in it.</summary>
     public Action<StreamEvent>? OnEvent { get; set; }
     /// <summary>Other <c>session.update</c> fields, sent as given.</summary>
@@ -143,6 +203,16 @@ public sealed class StreamOptions
             if (TurnDetection.MaxSilenceMs is not null) td["max_silence_ms"] = TurnDetection.MaxSilenceMs;
             m["turn_detection"] = td;
         }
+        if (RedactPii)
+        {
+            m["redact_pii"] = true;
+            if (RedactPiiPolicies is { Count: > 0 }) m["redact_pii_policies"] = RedactPiiPolicies.ToList();
+            if (!string.IsNullOrEmpty(RedactPiiSub)) m["redact_pii_sub"] = RedactPiiSub;
+        }
+        if (IncludePartials is not null) m["include_partials"] = IncludePartials.Value;
+        if (!string.IsNullOrEmpty(Voiceprint)) m["voiceprint"] = Voiceprint;
+        if (CaptureVoiceprint) m["capture_voiceprint"] = true;
+        if (!string.IsNullOrEmpty(SpeakerPolicy)) m["speaker_policy"] = SpeakerPolicy;
         if (Extra is not null)
             foreach (var kv in Extra) m[kv.Key] = kv.Value;
         return m;
@@ -612,7 +682,19 @@ public sealed class LiveSession : IAsyncDisposable
         {
             var finals = _finals.Values.OrderBy(f => f.Index).ToList();
             var text = _done?.Text ?? string.Join(" ", finals.Select(f => f.Text).Where(t => t.Length > 0));
-            return new StreamResult { JobId = JobId, Text = text, Finals = finals, Complete = complete };
+            string? voiceprint = null;
+            VoiceprintQuality? quality = null;
+            if (_done is not null && _done.Raw.ValueKind == JsonValueKind.Object)
+            {
+                if (_done.Raw.TryGetProperty("voiceprint", out var vp) && vp.ValueKind == JsonValueKind.String)
+                    voiceprint = vp.GetString();
+                quality = VoiceprintQuality.From(_done.Raw);
+            }
+            return new StreamResult
+            {
+                JobId = JobId, Text = text, Finals = finals, Complete = complete,
+                Voiceprint = voiceprint, VoiceprintQuality = quality,
+            };
         }
     }
 }

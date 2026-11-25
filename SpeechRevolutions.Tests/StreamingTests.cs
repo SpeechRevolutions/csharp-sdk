@@ -161,6 +161,42 @@ public class StreamingTests
         Assert.True(result.Complete);
         Assert.Equal("hello world", result.Text);
         Assert.Equal("job-1", result.JobId);
+        Assert.Null(result.Voiceprint);
+        Assert.Null(result.VoiceprintQuality);
+    }
+
+    [Fact]
+    public async Task CapturedVoiceprintComesBackInTheResult()
+    {
+        var events = new List<StreamEvent>();
+        using var srv = new FakeServer(async (n, c) =>
+        {
+            await c.Send(new { type = "session.created", job_id = "job-v" });
+            await c.Send(new { type = "voice_focus", active = true });
+            await c.WaitFor(c.HasFinalCommit);
+            await c.Send(new { type = "final", index = 0, text = "hello", start = 0, end = 1 });
+            await c.Send(new
+            {
+                type = "transcription.done", text = "hello", voiceprint = "vp1.sealed",
+                voiceprint_quality = new { score = 0.82, ok = true, reasons = Array.Empty<string>() },
+            });
+        });
+        var session = await Client(srv.BaseUrl).StreamAsync(new StreamOptions
+        {
+            CaptureVoiceprint = true, RedactPii = true,
+            OnEvent = e => { lock (events) events.Add(e); },
+        });
+        session.SendAudio(Pcm(400));
+        var result = await session.FinishAsync(new CancellationTokenSource(5000).Token);
+        var upd = srv.Conns[0].Got[0];
+        Assert.True(upd.GetProperty("capture_voiceprint").GetBoolean());
+        Assert.True(upd.GetProperty("redact_pii").GetBoolean());
+        Assert.Equal("vp1.sealed", result.Voiceprint);
+        Assert.NotNull(result.VoiceprintQuality);
+        Assert.True(result.VoiceprintQuality!.Ok);
+        Assert.Equal(0.82, result.VoiceprintQuality.Score);
+        Assert.Empty(result.VoiceprintQuality.Reasons);
+        lock (events) Assert.Contains(events, e => e.Type == "voice_focus" && e.Active == true);
     }
 
     [Fact]
